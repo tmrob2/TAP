@@ -1,6 +1,7 @@
 use std::convert::TryFrom;
 use rand::seq::SliceRandom;
 use itertools::Itertools;
+use std::collections::HashSet;
 
 fn main() {
 
@@ -225,7 +226,7 @@ struct ModProductTransition {
     q: Vec<u32>,
     a: i8,
     s_prime: Vec<ProductTransitionPair>,
-    ap: Vec<string>,
+    ap: Vec<String>,
 }
 
 struct Pair {
@@ -319,7 +320,7 @@ struct ProductMDP {
 
 impl ProductMDP {
 
-    fn mod_labelling<'a>(&self, s: &u32, q: &u32, accepting: &bool, rejecting: &bool, justfail: bool, task_j: &u32, mdp_number: &i8, snew: bool) -> Vec<String> {
+    fn mod_labelling(&self, s: &u32, q: &u32, accepting: &bool, rejecting: &bool, justfail: bool, task_j: &u32, mdp_number: &i8, snew: bool) -> Vec<String> {
         // what is the label of the sub M
 
         if *q == 0u32 && snew == false {
@@ -406,21 +407,23 @@ impl ProductMDP {
                     }
                 }
                 // the following are labelling functions for the product mdp
-                let mut aptotal: HashSet<_> = HashSet::new();
-                aptotal.extend(&state.ap);
+                let mut aptotal = state.ap.to_vec();
                 for (i,x) in state.q.iter().enumerate() {
                     let j = u32::try_from(i).unwrap();
-                    let mut b: HashSet<&str> = HashSet::new();
                     let ap_new = self.mod_labelling(&state.s, x, &state.accepted, &state.rejected, false, &j, &mdp_number, false);
-                    aptotal.extend(&ap_new);
+                    aptotal.extend(ap_new);
                 }
-                let mut aptotal2: HashSet<_> = HashSet::new();
-                aptotal2.extend(&state.ap);
+                let aptotal_unique_hash: HashSet<_> = aptotal.iter().cloned().collect();
+                let aptotal_unique: Vec<String> = aptotal_unique_hash.into_iter().collect();
+
+                let mut aptotal2: Vec<String> = state.ap.to_vec();
                 for (i,x) in state.q.iter().enumerate() {
                     let j = u32::try_from(i).unwrap();
                     let ap_new2 = self.mod_labelling(&state.s, x, &state.accepted, &state.rejected, false, &j, &mdp_number, true);
-                    aptotal2.extend(&ap_new2);
+                    aptotal2.extend(ap_new2);
                 }
+                let aptotal2_unique_hash: HashSet<_> = aptotal2.iter().cloned().collect();
+                let aptotal2_unique: Vec<String> = aptotal2_unique_hash.into_iter().collect();
 
                 mod_prod_transitions.push(ModProductTransition{
                     s: state.s,
@@ -457,27 +460,31 @@ impl ProductMDP {
                             if r.state == sprime.q[r_index] {
                                 // this is a rejected state, with probability state.p the transition
                                 // will go from state.s, q -> s_star=counter, q and the label will be justfail
-                                let mut aptotal2: HashSet<_> = HashSet::new();
-                                aptotal2.extend(&state.ap);
+                                let aptotal: Vec<String> = state.ap.to_vec();
+                                let aptotal2: Vec<String> = state.ap.to_vec();
                                 for (i,x) in state.q.iter().enumerate() {
                                     let j = u32::try_from(i).unwrap();
                                     let ap_new2 = self.mod_labelling(&state.s, x, &state.accepted, &state.rejected, true, &j, &mdp_number, false);
-                                    aptotal2.extend(&ap_new2);
+                                    aptotal2.extend(ap_new2);
                                 }
-                                let mut aptotal: HashSet<_> = HashSet::new();
-                                aptotal.extend(&state.ap);
+                                let aptotal2_unique_hash: HashSet<_> = aptotal2.iter().cloned().collect();
+                                let aptotal2_unique: Vec<String> = aptotal2_unique_hash.into_iter().collect();
+
                                 for (i,x) in state.q.iter().enumerate() {
                                     let j = u32::try_from(i).unwrap();
                                     let ap_new = self.mod_labelling(&state.s, x, &state.accepted, &state.rejected, false, &j, &mdp_number, false);
-                                    aptotal.extend(&ap_new);
+                                    aptotal.extend(ap_new);
                                 }
+                                let aptotal_unique_hash: HashSet<_> = aptotal.iter().cloned().collect();
+                                let aptotal_unique: Vec<String> = aptotal2_unique_hash.into_iter().collect();
+
                                 state_space_new.push(ProductStateSpace{s: counter, q: state.q.to_vec()});
                                 mod_prod_transitions.push(ModProductTransition{
                                     s: state.s,
                                     q: state.q.to_vec(),
                                     a: state.a,
                                     s_prime: vec![ProductTransitionPair{s: counter, p: sprime.p, q: sprime.q.to_vec(), accepting: sprime.accepting, rejecting: sprime.rejecting}],
-                                    ap: aptotal,
+                                    ap: aptotal_unique,
                                 });
                                 //println!("Transition from s -> s*: {:?}", transition_s_star);
                                 mod_prod_transitions.push(ModProductTransition{
@@ -485,7 +492,7 @@ impl ProductMDP {
                                     q: sprime.q.to_vec(),
                                     a: *tau,
                                     s_prime: vec![ProductTransitionPair{s: sprime.s, p: 1., q: sprime.q.to_vec(), accepting: sprime.accepting, rejecting: sprime.rejecting}],
-                                    ap: aptotal2
+                                    ap: aptotal2_unique
                                 });
                                 //println!("Transition from s* to fail: {:?}", transition_from_s_star);
 
@@ -502,19 +509,20 @@ impl ProductMDP {
                 for sprime in state.s_prime.iter(){
                     sprime_new.push(ProductTransitionPair{s: sprime.s, p: sprime.p, q: sprime.q.to_vec(), accepting: sprime.accepting, rejecting: sprime.rejecting});
                 }
-                let mut aptotal: HashSet<_> = HashSet::new();
-                aptotal.extend(&state.ap);
+                let aptotal: Vec<String> = state.ap.to_vec();
                 for (i,x) in state.q.iter().enumerate() {
                     let j = u32::try_from(i).unwrap();
                     let ap_new = self.mod_labelling(&state.s, x, &state.accepted, &state.rejected, false, &j, &mdp_number, false);
-                    aptotal.union(&ap_new);
+                    aptotal.extend(ap_new);
                 }
+                let aptotal_unique_hash: HashSet<_> = aptotal.iter().cloned().collect();
+                let aptotal_unique: Vec<String> = aptotal_unique_hash.into_iter().collect();
                 mod_prod_transitions.push(ModProductTransition{
                     s: state.s,
                     q: state.q.to_vec(),
                     a: state.a,
                     s_prime: sprime_new,
-                    ap: aptotal
+                    ap: aptotal_unique,
                 });
                 //println!("Neither self loop nor first rejected: {:?}", transition_normal);
             }
@@ -573,12 +581,14 @@ impl ModifiedProductMDP {
         }
     }
 
-    fn label(&self, s: &u32, q: &Vec<u32>) -> HashSet<&str> {
-        let ap_return: HashSet<_> = HashSet::new();
+    fn label(&self, s: &u32, q: &Vec<u32>) -> Vec<String> {
+        let ap_return: Vec<String> = Vec::new();
         for transition in self.transitions.iter().filter(|x| x.s == *s && x.q == *q){
             //println!("{:?}", transition.ap);
-            ap_return.union(&transition.ap);
+            ap_return.extend(transition.ap);
         }
+        let ap_return_hash: HashSet<_> = ap_return.iter().cloned().collect();
+        let ap_return_unique: Vec<String> = ap_return_hash.into_iter().collect();
         ap_return
     }
 
@@ -728,8 +738,10 @@ fn product_mdp_v4(dfa: &DFA, pmdp: &ProductMDP, j_task: &u32) -> ProductMDP {
                 //println!("self loop: {}, that loop: {}, snew: {}", self_loop, self_that, snew_cond);
                 //let ap_new: HashSet<_> = HashSet::new();
                 let state_label = (pmdp.labelling)(state.s);
-                let mut v: HashSet<_> = vec![state_label].into_iter().collect();
-                v.extend(&transition.ap);
+                let ap: Vec<String> = transition.ap.to_vec();
+                let ap_hash: HashSet<_> = ap.iter().cloned().collect();
+                ap_hash.insert(state_label.to_string());
+                let ap_unique: Vec<String> = ap_hash.into_iter().collect();
                 new_product_transitions.push(ProductTransition {
                     s: state.s,
                     q: state.q.to_vec(),
@@ -739,7 +751,7 @@ fn product_mdp_v4(dfa: &DFA, pmdp: &ProductMDP, j_task: &u32) -> ProductMDP {
                     first_rejected_info: rejected_capture,
                     accepted: if dfa.accepted.contains(&state.q[j]) { true } else { false },
                     rejected: if dfa.rejected.contains(&state.q[j]) {true} else {false},
-                    ap: v
+                    ap: ap_unique
                 });
             }
         }
@@ -782,6 +794,8 @@ fn product_mdp_v4(dfa: &DFA, pmdp: &ProductMDP, j_task: &u32) -> ProductMDP {
                 //println!("self loop: {}, that loop: {}, snew: {}", self_loop, self_that, snew_cond);
                 //let ap_new: HashSet<_> = HashSet::new();
                 let state_label = (pmdp.labelling)(state.s);
+                let ap: Vec<String> = transition.ap.to_vec();
+                let ap_hash: HashSet<_> = 
                 let mut v: HashSet<_> = vec![state_label].into_iter().collect();
                 v.extend(&transition.ap);
                 new_product_transitions.push(ProductTransition {
