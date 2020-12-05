@@ -176,7 +176,8 @@ fn main() {
     /*for transition in t.transitions.iter() {
         println!("{:?}", transition)
     }*/
-    t.team_traversal()
+    t.team_traversal();
+
 }
 
 fn delta1<'a>(q: u32, a: &'a str) -> u32 {

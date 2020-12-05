@@ -18,7 +18,7 @@ pub struct TeamTransitionPair{
     pub abstract_label: HashMap<u8, TaskProgress>
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TeamTransition{
     pub r: u8,
     pub s: u32,
@@ -27,6 +27,20 @@ pub struct TeamTransition{
     pub s_prime: Vec<TeamTransitionPair>,
     pub abstract_label: HashMap<u8, TaskProgress>,
     pub stoppable: bool,
+}
+
+impl TeamTransition {
+    fn default() -> TeamTransition {
+        TeamTransition {
+            r: 0,
+            s: 0,
+            q: vec![],
+            a: TaskAction { a: 0, task: 0 },
+            s_prime: vec![],
+            abstract_label: Default::default(),
+            stoppable: false
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -184,39 +198,47 @@ impl TeamMDP {
         team_state_space
     }
 
+    pub fn determine_choices(&self, r: &u8, s: &u32, q: &Vec<u32>) -> TeamTraversalStateSpace {
+        // for r,s,q determine the transitions that meet these criteria
+        // we can do this with a filter, and use a closure to reduce the transitions to the input params
+        let mut choices: Vec<TeamTransition> = Vec::new();
+        for transition in self.transitions.iter().filter(|x| x.s == *s && x.r == *r && x.q == q) {
+            choices.push(transition.clone());
+        }
+        match choices.choose(&mut rand::thread_rng()) {
+            Some(x) => TeamTraversalStateSpace{
+                state: TeamStateSpace {
+                    r: x.r,
+                    s: x.s,
+                    q: x.q.to_vec()
+                },
+                a: TaskAction {a: x.a.a, task: x.a.task }
+            },
+            None => TeamTraversalStateSpace::default()
+        }
+    }
+
     pub fn team_traversal(&self){
         let mut finished: bool = false;
         let mut new_state = TeamTraversal::default();
         let tasks: Vec<u8> = (0..self.task_count).collect();
 
+        // We should turn the following into a choice function
         println!("initial; r: {}, s:{}, q:{:?}", self.initial.r, self.initial.s, self.initial.q);
-        let mut initial_choices: Vec<TeamTransition> = Vec::new();
-        for transition in self.transitions.iter().
-            filter(|x| x.s == self.initial.s && x.r == self.initial.r && x.q == self.initial.q ) {
-            let item = TeamTransition{
-                r: transition.r,
-                s: transition.s,
-                q: transition.q.to_vec(),
-                a: TaskAction { a: transition.a.a, task: transition.a.task },
-                s_prime: transition.s_prime.to_vec(),
-                abstract_label: transition.abstract_label.clone(),
-                stoppable: transition.stoppable
-            };
-            println!("{:?}", item);
-            initial_choices.push(item);
-        }
+        let transition_choice  = self.determine_choices(&self.initial.r, &self.initial.s, &self.initial.q);
+        let current_state = TeamTraversalStateSpace{
+            state: TeamStateSpace {
+                r: transition_choice.r,
+                s: transition_choice.s,
+                q: transition_choice.q.to_vec()
+            },
+            a: TaskAction{ a: initial_choice.a.a, task: initial_choice.a.task },
+        };
 
         let mut current_state = TeamTraversalStateSpace::default();
         match initial_choices.choose(&mut rand::thread_rng()) {
             Some(initial_choice) => {
-                current_state = TeamTraversalStateSpace{
-                    state: TeamStateSpace {
-                        r: initial_choice.r,
-                        s: initial_choice.s,
-                        q: initial_choice.q.to_vec()
-                    },
-                    a: TaskAction{ a: initial_choice.a.a, task: initial_choice.a.task },
-                };
+
             },
             None => {  }
         }
