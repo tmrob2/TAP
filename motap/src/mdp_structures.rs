@@ -1,7 +1,9 @@
 use std::collections::{HashSet, HashMap};
 use rand::seq::SliceRandom;
 use std::convert::TryFrom;
-use permutohedron::LexicalPermutation;
+use std::hash::Hash;
+use std::fmt;
+use crate::team_mdp_structures::TeamMDP;
 
 #[derive(Debug)]
 pub struct TransitionPair {
@@ -13,7 +15,8 @@ pub struct TransitionPair {
 pub struct Transition {
     pub s: u32,
     pub a: i8,
-    pub s_prime: Vec<TransitionPair>
+    pub s_prime: Vec<TransitionPair>,
+    pub rewards: f32
 }
 
 #[derive(Debug, Clone)]
@@ -24,13 +27,14 @@ pub struct ProductTransitionPair {
     pub abstract_label: HashMap<u8, TaskProgress>,
     //pub accepting: bool,
     //pub rejecting: bool,
-    pub ap: String // I am wondering now whether this is just a string
+    pub ap: String,
+    pub stoppable: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, Eq, PartialEq,)]
 pub struct ProductStateSpace {
     pub s: u32,
-    pub q: Vec<u32>
+    pub q: Vec<u32>,
 }
 
 impl ProductStateSpace {
@@ -46,10 +50,25 @@ impl ProductStateSpace {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub struct TaskAction {
     pub a: i8,
     pub task: u8,
+}
+
+impl fmt::Display for TaskAction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}, {}", self.a, self.task)
+    }
+}
+
+impl TaskAction {
+    pub fn default() -> TaskAction {
+        TaskAction {
+            a: -1,
+            task: 0
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -57,6 +76,7 @@ pub struct ProductTransition {
     pub s: u32,
     pub q: Vec<u32>,
     pub a: TaskAction,
+    pub rewards: f32,
     pub s_prime: Vec<ProductTransitionPair>,
     pub abstract_label: HashMap<u8, TaskProgress>,
     // we actually gain nothing by storing which task is a just fail because construction
@@ -87,32 +107,47 @@ pub struct MDP {
     pub labelling: fn(u32) -> &'static str,
 }
 
+pub fn is_stoppable(abstract_label: &HashMap<u8, TaskProgress>) -> bool {
+    let inProgress = abstract_label.values().any(|x| match x {
+        TaskProgress::InProgress => true,
+        _ => false,
+    });
+    if inProgress {
+        false
+    } else {
+        true
+    }
+}
+
 impl MDP {
 
-    pub fn get_abstract_label(q: Option<&u32>, qprime: &u32, dfa: &DFA) -> (TaskProgress,bool) {
+    pub fn get_abstract_label(q: Option<&u32>, qprime: &u32, dfa: &DFA) -> TaskProgress {
         match q {
             Some(x) => {
                 if dfa.accepted.contains(qprime) {
-                    (TaskProgress::Finished, true) }
+                    TaskProgress::Finished
+                }
                 else if dfa.rejected.contains(qprime) && dfa.rejected.contains(x) {
-                    (TaskProgress::Failed, true)
+                    TaskProgress::Failed
                 } else if dfa.rejected.contains(qprime) && !dfa.rejected.contains(x) {
-                    (TaskProgress::JustFailed, true)
+                    TaskProgress::JustFailed
                 } else if dfa.initial == *qprime {
-                    (TaskProgress::Initial, false)
+                    // check if any other task is inProgress
+                    TaskProgress::Initial
                 } else {
-                    (TaskProgress::InProgress, false)
+                    TaskProgress::InProgress
                 }
             },
             None => {
                 if dfa.accepted.contains(qprime) {
-                    (TaskProgress::Finished, true) }
+                    TaskProgress::Finished
+                }
                 else if dfa.rejected.contains(qprime) {
-                    (TaskProgress::Failed, true)
+                    TaskProgress::Failed
                 } else if dfa.initial == *qprime {
-                    (TaskProgress::Initial, false)
+                    TaskProgress::Initial
                 } else {
-                    (TaskProgress::InProgress, false)
+                    TaskProgress::InProgress
                 }
             }
         }
@@ -122,9 +157,9 @@ impl MDP {
         // create a new state space based on the mdp and the dfa
         let mut state_space_new: Vec<ProductStateSpace> = Vec::new();
         let mut transitions_new: Vec<ProductTransition> = Vec::new();
+        let mut state_index: u8 = 0;
         for state in self.states.iter() {
             for q in dfa.states.iter() {
-                state_space_new.push(ProductStateSpace{ s: *state, q: vec![*q] });
                 for transition in self.transitions.iter().filter(|x| x.s == *state) {
                     let mut sprimes: Vec<ProductTransitionPair> = Vec::new();
                     for sprime in transition.s_prime.iter() {
@@ -132,36 +167,38 @@ impl MDP {
                         let qprime: u32 = (dfa.delta)(*q, (self.labelling)(sprime.s));
                         // determine if it is a self loop or not
                         let mut task_progress: HashMap<u8, TaskProgress> = HashMap::new();
-                        let (progress_value, _) = MDP::get_abstract_label(Some(&q), &qprime, &dfa);
+                        let progress_value = MDP::get_abstract_label(Some(&q), &qprime, &dfa);
                         task_progress.insert(0, progress_value);
                         sprimes.push(ProductTransitionPair{
                             s: sprime.s,
                             p: sprime.p,
                             q: vec![qprime],
-                            abstract_label: task_progress,
+                            abstract_label: task_progress.clone(),
                             ap: format!("{}",(self.labelling)(sprime.s)),
+                            stoppable: is_stoppable(&task_progress),
                         });
                     }
-
                     let mut state_progress: HashMap<u8, TaskProgress> = HashMap::new();
-                    let (state_progress_value, stoppable_value) = MDP::get_abstract_label(None, q, &dfa);
+                    let state_progress_value = MDP::get_abstract_label(None, q, &dfa);
                     state_progress.insert(0, state_progress_value);
                     transitions_new.push(ProductTransition{
                         s: *state,
                         q: vec![*q],
                         a: TaskAction {a: transition.a, task: 0},
+                        rewards: transition.rewards,
                         s_prime: sprimes,
-                        abstract_label: state_progress,
-                        stoppable: if transition.s == self.initial && *q == dfa.initial { true } else {stoppable_value },
+                        abstract_label: state_progress.clone(),
+                        stoppable: is_stoppable(&state_progress),
                         ap: format!("{}", (self.labelling)(*state)),
                     })
                 }
+                state_space_new.push(ProductStateSpace{ s: *state, q: vec![*q]});
             }
         }
         empty_container.dfa_delta.insert(0u8, &dfa.delta);
         empty_container.states = state_space_new;
         empty_container.transitions = transitions_new;
-        empty_container.initial = ProductStateSpace{ s: self.initial, q: vec![dfa.initial] };
+        empty_container.initial = ProductStateSpace{ s: self.initial, q: vec![dfa.initial]};
         empty_container.labelling = vec![self.labelling];
         empty_container.task_counter = 1;
         empty_container
@@ -193,7 +230,26 @@ pub struct ModProductTransitionPair {
     pub p: f32,
     pub q: Vec<u32>,
     pub abstract_label: HashMap<u8, TaskProgress>,
-    pub ap: Vec<String>
+    pub ap: String,
+    pub state_index: usize,
+    pub stoppable: bool,
+}
+
+pub fn tasks_finished(transition: &HashMap<u8, TaskProgress>) -> bool {
+    let mut task_progress: Vec<bool> = Vec::new();
+    for (k, v) in transition {
+        match v {
+            TaskProgress::Failed => task_progress.push(true),
+            TaskProgress::Finished => task_progress.push(true),
+            TaskProgress::JustFailed => task_progress.push(true),
+            _ => task_progress.push(false)
+        }
+    }
+    if task_progress.iter().all(|x| *x == true) {
+        true
+    } else {
+        false
+    }
 }
 
 impl <'a> ModifiedProductMDP <'a> {
@@ -208,7 +264,31 @@ impl <'a> ModifiedProductMDP <'a> {
         }
     }
 
-    pub fn generate_mod_product(&mut self, pmdp: &'a ProductMDP) -> &'a ModifiedProductMDP {
+    pub fn task_rewards(abstract_label: &HashMap<u8, TaskProgress>) -> HashMap<u8, f32> {
+        let mut rewards= HashMap::new();
+        for (k,v) in abstract_label.iter() {
+            match v {
+                TaskProgress::JustFailed => rewards.insert(*k, 1.),
+                _ => rewards.insert(*k, 0.)
+            };
+        }
+        rewards
+    }
+
+    /// A function that assigns a state vector index to its corresponding transitions for later use in the
+    /// value iteration algorithms
+    pub fn assign_state_index_to_transition(&mut self) -> () {
+        for transition in self.transitions.iter_mut() {
+            let index = self.states.iter().position(|x| x.s == transition.s && x.q == transition.q).unwrap();
+            transition.state_index = index;
+            for sprime in transition.s_prime.iter_mut() {
+                let sprime_index = self.states.iter().position(|x| x.s == sprime.s && x.q == sprime.q).unwrap();
+                sprime.state_index = sprime_index;
+            }
+        }
+    }
+
+    pub fn generate_mod_product(&mut self, pmdp: &'a ProductMDP) -> &'a mut ModifiedProductMDP {
         // There are three steps to generating a modified product MDP
         // 1. A new state is added for self loops, this is so that we can clearly identify if the
         //    task has begun
@@ -218,69 +298,101 @@ impl <'a> ModifiedProductMDP <'a> {
 
         // self loops definitions for A'(s,q) subset A(s,q) such that a in A'(s,q) iff
         // P'((s,q), a, (s,q)) > 0 && P'((s,q), a, (s'q'))>0 for some (s',q') != (s,q)
-        let mut mod_prod_state_space: Vec<ProductStateSpace> = Vec::new();
+        let mut unique_state_space: HashSet<ProductStateSpace> = HashSet::new();
         let mut mod_prod_transitions: Vec<ModProductTransition> = Vec::new();
         let mut counter: u32 = u32::try_from(pmdp.states.len()).unwrap();
         for transition in pmdp.transitions.iter() {
             // that is for self loop identification, there needs to be a edge from (s,q) -> (s,q)
             // and there needs to be an edge from (s,q) -> (s',q') where (s',q') != (s,q)
+            unique_state_space.insert(ProductStateSpace{ s: transition.s, q: transition.q.to_vec()});
             let loop_cond: bool = transition.s_prime.iter().any(|x| x.s == transition.s);
             let no_loop_cond: bool = transition.s_prime.iter().any(|x| x.s != transition.s);
             if loop_cond == true && no_loop_cond == true {
             //if transition.self_loop == true {
                 // add a new state to the state space, this state will be snew
-                mod_prod_state_space.push(ProductStateSpace{ s: counter, q: transition.q.to_vec() });
+                unique_state_space.insert(ProductStateSpace{ s: counter, q: transition.q.to_vec() });
                 //println!("Self loop");
                 // edit the current transition so that is goes to the new state, and then add a transition from the
                 // new state to the original sprime state
                 // Another thing to consider is that this must be a self loop, it cannot be anything else because it
                 // satisfies the definition, therefore all of the sprimes must be edited
-                let mut sprimes_current: Vec<ProductTransitionPair> = Vec::new();
-                let mut sprimes_snew: Vec<ProductTransitionPair> = Vec::new();
+                let mut sprimes_current: Vec<ModProductTransitionPair> = Vec::new();
+                let mut sprimes_snew: Vec<ModProductTransitionPair> = Vec::new();
                 for sprime in transition.s_prime.iter(){
                     // if (s,q) != (s',q') =>  copy, and copy and edit from new state
-                    if sprime.s != transition.s && sprime.q != transition.q {
+                    //&& sprime.q != transition.q
+                    if sprime.s != transition.s {
+                        //println!("progress: ({}, {:?}) -> ({},{:?})", transition.s, transition.q, sprime.s, sprime.q);
                         // this is not a loop
-                        sprimes_current.push(sprime.clone()); // original this will be from snew to s'
-                        sprimes_snew.push(sprime.clone());
+                        sprimes_current.push(ModProductTransitionPair{
+                            s: sprime.s,
+                            p: sprime.p,
+                            q: sprime.q.to_vec(),
+                            abstract_label: sprime.abstract_label.clone(),
+                            ap: "".to_string(),
+                            state_index: 0,
+                            stoppable: sprime.stoppable
+                        }); // original this will be from snew to s'
+                        sprimes_snew.push(ModProductTransitionPair{
+                            s: sprime.s,
+                            p: sprime.p,
+                            q: sprime.q.to_vec(),
+                            abstract_label: sprime.abstract_label.clone(),
+                            ap: "".to_string(),
+                            state_index: 0,
+                            stoppable: sprime.stoppable
+                        });
+                        // this will be the original AP
                     } else {
+                        //println!("loop: ({}, {:?}) -> ({},{:?})", transition.s, transition.q, sprime.s, sprime.q);
                         // these should only be self loops, but there may be circumstances where we have been tricked somewhere
                         // in the creation of the product MDP, something to watch out for...
                         // in the case where is it a loop, both versions of the transitions will be edited, and the abstract AP will be edited
                         let mut abstract_ap_new = sprime.abstract_label.clone();
                         let task_progress_new = ModifiedProductMDP::mod_abstract_ap(abstract_ap_new.get(&transition.a.task));
+                        // we will need an extra function here to declare whether the new ap for s' is stoppable
+
                         abstract_ap_new.remove(&transition.a.task);
                         abstract_ap_new.insert(transition.a.task, task_progress_new);
-                        let sprime_loop_val = ProductTransitionPair{
+                        let sprime_loop_val = ModProductTransitionPair {
                             s: counter,
                             p: sprime.p,
                             q: sprime.q.to_vec(),
                             abstract_label: abstract_ap_new,
-                            ap: "".to_string() // starting to question if we need a string interpretation of the abstract ap
+                            ap: "".to_string(), // starting to question if we need a string interpretation of the abstract ap
+                            stoppable: false,
+                            state_index: 0,
                         };
                         sprimes_current.push(sprime_loop_val.clone());
                         sprimes_snew.push(sprime_loop_val.clone());
                     }
                 }
                 // this is the current transition
+                let task_rewards = ModifiedProductMDP::task_rewards(&transition.abstract_label);
                 mod_prod_transitions.push(ModProductTransition{
                     s: transition.s,
                     q: transition.q.to_vec(),
                     a: TaskAction {a: transition.a.a, task: transition.a.task},
+                    constraint: transition.rewards,
+                    reach_rewards: task_rewards.clone(),
                     s_prime: sprimes_current,
                     abstract_label: transition.abstract_label.clone(),
                     ap: Vec::new(),
-                    stoppable: transition.stoppable
+                    stoppable: transition.stoppable,
+                    state_index: 0,
                 });
                 // this is the transitions for snew
                 mod_prod_transitions.push(ModProductTransition{
                     s: counter,
                     q: transition.q.to_vec(),
                     a: TaskAction {a: transition.a.a, task: transition.a.task},
+                    constraint: transition.rewards,
+                    reach_rewards: task_rewards.clone(),
                     s_prime: sprimes_snew,
                     abstract_label: transition.abstract_label.clone(),
                     ap: Vec::new(),
-                    stoppable: false
+                    stoppable: is_stoppable(&transition.abstract_label),
+                    state_index: 0,
                 });
                 counter = counter + 1;
 
@@ -289,16 +401,30 @@ impl <'a> ModifiedProductMDP <'a> {
                 // there is only a loop to itself, and nothing else, therefore no progress is possible
                 //println!("pure loop")
                 //println!("Pure loop: {:?}", transition);
-                mod_prod_state_space.push(ProductStateSpace{ s: transition.s, q: transition.q.to_vec() });
-
+                let task_rewards = ModifiedProductMDP::task_rewards(&transition.abstract_label);
+                let mut sprimes: Vec<ModProductTransitionPair> = Vec::new();
+                for sprime in transition.s_prime.iter() {
+                    sprimes.push(ModProductTransitionPair{
+                        s: sprime.s,
+                        p: sprime.p,
+                        q: sprime.q.to_vec(),
+                        abstract_label: sprime.abstract_label.clone(),
+                        ap: "".to_string(),
+                        state_index: 0,
+                        stoppable: sprime.stoppable
+                    })
+                }
                 mod_prod_transitions.push(ModProductTransition{
                     s: transition.s,
                     q: transition.q.to_vec(),
                     a: TaskAction {a: transition.a.a, task: transition.a.task},
-                    s_prime: transition.s_prime.to_vec(),
+                    s_prime: sprimes,
+                    constraint: transition.rewards,
+                    reach_rewards: task_rewards,
                     ap: vec![],
                     abstract_label: transition.abstract_label.clone(),
-                    stoppable: transition.stoppable
+                    stoppable: transition.stoppable,
+                    state_index: 0,
                 });
             }
             else {
@@ -314,10 +440,10 @@ impl <'a> ModifiedProductMDP <'a> {
                     },
                     None => false
                 };
-                mod_prod_state_space.push(ProductStateSpace{s: transition.s, q: transition.q.to_vec()});
                 if current_state_abstract_ap == true {
-                    let mut sprime_current: Vec<ProductTransitionPair> = Vec::new();
+                    let mut sprime_current: Vec<ModProductTransitionPair> = Vec::new();
                     //println!("Orginal: ({},{:?}) -> ({:?})", transition.s, transition.q, transition.s_prime);
+                    let task_rewards = ModifiedProductMDP::task_rewards(&transition.abstract_label);
                     for sprime in transition.s_prime.iter() {
                         // if there is an s' which has a task member of justFail, then we add a new state, called s*
                         match sprime.abstract_label.get(current_task) {
@@ -325,47 +451,58 @@ impl <'a> ModifiedProductMDP <'a> {
                                 TaskProgress::JustFailed => {
                                     //println!("justFail transition found, state: ({}, {:?}), {}, ({}, {:?}) task: {}",
                                     //         transition.s, transition.q, transition.a.a, sprime.s, sprime.q, current_task);
-                                    mod_prod_state_space.push(ProductStateSpace{ s: counter, q: transition.q.to_vec() });
+                                    unique_state_space.insert(ProductStateSpace{ s: counter, q: sprime.q.to_vec() });
                                     // a product transition to s*, then a product transition from s* to the original s',
                                     // which is just a copy of the original transition
                                     let mut new_abstract_label: HashMap<u8, TaskProgress> = sprime.abstract_label.clone();
+
                                     new_abstract_label.remove(&transition.a.task);
                                     new_abstract_label.insert(transition.a.task, TaskProgress::Failed);
-                                    let sstar_sprime = ProductTransitionPair{
+                                    let sstar_sprime = ModProductTransitionPair{
                                         s: sprime.s,
                                         p: 1.,
                                         q: sprime.q.to_vec(),
                                         abstract_label: new_abstract_label,
                                         ap: "".to_string(),
+                                        state_index: 0,
+                                        stoppable: true
                                     };
+                                    let task_rewards2 = ModifiedProductMDP::task_rewards(&sprime.abstract_label);
                                     mod_prod_transitions.push(ModProductTransition{
                                         s: counter,
                                         q: sprime.q.to_vec(),
                                         a: TaskAction {a: transition.a.a, task: transition.a.task},
+                                        constraint: 0., // we say that the cost is zero to take the action tau in state s*
+                                        reach_rewards: task_rewards2,
                                         s_prime: vec![sstar_sprime],
                                         ap: vec![format!("justFail{}", transition.a.task)],
                                         abstract_label: sprime.abstract_label.clone(),
-                                        stoppable: true
+                                        stoppable: true,
+                                        state_index: 0,
                                     });
 
-                                    sprime_current.push(ProductTransitionPair{
+                                    sprime_current.push(ModProductTransitionPair{
                                         s: counter,
                                         p: sprime.p,
                                         q: sprime.q.to_vec(),
                                         abstract_label: sprime.abstract_label.clone(),
-                                        ap: "".to_string()
+                                        ap: "".to_string(),
+                                        state_index: 0,
+                                        stoppable: true // bercause this is the transition to s*
                                     });
                                     //println!("Added transition: ({},{:?}) -> ({},{:?}) -> ({}, {:?})", transition.s, transition.q.to_vec(), counter, sprime.q, sprime.s, sprime.q);
                                     counter = counter + 1;
                                 },
                                 _ => {
                                     // this is the case where we do not see a transition to justFail, and therefore we just copy the transition
-                                    sprime_current.push(ProductTransitionPair{
+                                    sprime_current.push(ModProductTransitionPair{
                                         s: sprime.s,
                                         p: sprime.p,
                                         q: sprime.q.to_vec(),
                                         abstract_label: sprime.abstract_label.clone(),
-                                        ap: "".to_string()
+                                        ap: "".to_string(),
+                                        state_index: 0,
+                                        stoppable: sprime.stoppable,
                                     });
                                 }
                             },
@@ -376,72 +513,114 @@ impl <'a> ModifiedProductMDP <'a> {
                         s: transition.s,
                         q: transition.q.to_vec(),
                         a: TaskAction {a: transition.a.a, task: transition.a.task},
+                        constraint: transition.rewards,
+                        reach_rewards: task_rewards,
                         s_prime: sprime_current,
                         ap: vec![format!("!justFail{}", transition.a.task)],
                         abstract_label: transition.abstract_label.clone(),
-                        stoppable: transition.stoppable
+                        stoppable: transition.stoppable,
+                        state_index: 0,
                     })
 
                 } else {
                     // we are in an end condition and we should just copy over the transition
-                    mod_prod_state_space.push(ProductStateSpace{s: transition.s, q: transition.q.to_vec()});
+                    let task_rewards = ModifiedProductMDP::task_rewards(&transition.abstract_label);
+                    let mut sprimes: Vec<ModProductTransitionPair> = Vec::new();
+                    for sprime in transition.s_prime.iter(){
+                        sprimes.push(ModProductTransitionPair{
+                            s: sprime.s,
+                            p: sprime.p,
+                            q: sprime.q.to_vec(),
+                            abstract_label: sprime.abstract_label.clone(),
+                            ap: "".to_string(),
+                            state_index: 0,
+                            stoppable: sprime.stoppable
+                        })
+                    }
                     mod_prod_transitions.push(ModProductTransition{
                         s: transition.s,
                         q: transition.q.to_vec(),
                         a: TaskAction {a: transition.a.a, task: transition.a.task},
-                        s_prime: transition.s_prime.to_vec(),
+                        constraint: transition.rewards,
+                        reach_rewards: task_rewards,
+                        s_prime: sprimes,
                         ap: vec![],
                         abstract_label: transition.abstract_label.clone(),
-                        stoppable: transition.stoppable
+                        stoppable: transition.stoppable,
+                        state_index: 0,
                     })
                 }
             }
         }
 
-        self.states = mod_prod_state_space;
+        self.states = unique_state_space.into_iter().collect();
         self.transitions = mod_prod_transitions;
         self.task_counter = pmdp.task_counter;
         self.initial = pmdp.initial.clone();
         self
 
     }
+    
+    /// This function acts as the scheduler would act and non-deterministically selects the next action
+    /// of a series of actions representing tasks action sets.
+    fn determine_choices(&self, s: &u32, q: &Vec<u32>) -> TraversalStateSpace {
+        let mut choices: Vec<ModProductTransition> = Vec::new();
+        for transition in self.transitions.iter().filter(|x| x.s == *s && x.q == *q) {
+            choices.push(transition.clone());
+        }
+        match choices.choose(&mut rand::thread_rng()) {
+            Some(x) => TraversalStateSpace {
+                state: ProductStateSpace { s: x.s, q: x.q.to_vec() },
+                a: TaskAction { a: x.a.a, task: x.a.task },
+                abstract_label: x.abstract_label.clone(),
+                stoppable: x.stoppable
+            },
+            None => TraversalStateSpace {
+                state: ProductStateSpace { s: 0, q: vec![] },
+                a: TaskAction { a: 0, task: 0 },
+                abstract_label: Default::default(),
+                stoppable: false
+            }
+        }
+    }
 
     pub fn traverse_n_steps(&self){
         //let mut step: u32 = 0;
         let mut new_state = Traversal::default();
         let mut finished: bool = false;
-        let task_perms: Vec<Vec<u8>> = generate_task_permuatations(self.task_counter);
-        // choose a permutation form the vector of permutations
-        let task_int = task_perms.choose(&mut rand::thread_rng()).unwrap();
-        println!("Random task vector: {:?}", task_int);
-        let mut task_iter = task_int.iter();
-        let mut current_task = task_iter.next().unwrap();
-        let mut current_state = TraversalStateSpace{state: ProductStateSpace{s: self.initial.s, q: self.initial.q.to_vec()}, a: TaskAction{a: 1, task: *current_task}};
-        let mut task: bool = false;
-        let mut debug_just_fail: bool = false;
-        println!("First state: {:?}", current_state);
+        let mut transition_choice = self.determine_choices(&self.initial.s, &self.initial.q);
+        let mut current_state = TraversalStateSpace {
+            state: ProductStateSpace { s: transition_choice.state.s, q: transition_choice.state.q.to_vec() },
+            a: TaskAction { a: transition_choice.a.a, task: transition_choice.a.task },
+            abstract_label: transition_choice.abstract_label.clone(),
+            stoppable: transition_choice.stoppable
+        };
+        print!("p((s:{},q{:?}) , a:{:?}, (s':{},q':{:?})): ", &self.initial.s, &self.initial.q, &current_state.a, &current_state.state.s, &current_state.state.q);
+        println!("abstract label: {:?} -> {:?}", self.label(&self.initial.s, &self.initial.q, &current_state.a), self.label(&current_state.state.s, &current_state.state.q, &current_state.a));
         while !finished {
-            while !task {
-                new_state = self.traversal(&current_state);
-                print!("p((s:{},q{:?}) , a:{:?}, (s':{},q':{:?}))={}: ", &current_state.state.s, &current_state.state.q, &new_state.a, &new_state.data.s, &new_state.data.q, &new_state.p);
-                println!("abstract label: {:?} -> {:?}", self.label(&current_state.state.s, &current_state.state.q, &current_state.a), self.label(&new_state.data.s, &new_state.data.q, &new_state.a));
-                match new_state.abstract_ap.get(current_task) {
-                    Some(x) => match x {
-                        //TaskProgress::JustFailed => {task = true; debug_just_fail = true},
-                        TaskProgress::Finished => {task = true},
-                        TaskProgress::Failed => {task = true},
-                        _ => {}
-                    },
-                    None => {println!("On call of abstract AP, returned None, current task: {}", current_task); task = false}
-                }
-                current_state = TraversalStateSpace{state: ProductStateSpace{s: new_state.data.s, q: new_state.data.q.to_vec()}, a: new_state.a};
-            }
+            new_state = self.traversal(&current_state);
+            print!("p((s:{},q{:?}) , a:{:?}, (s':{},q':{:?}))={}: ", &current_state.state.s, &current_state.state.q, &new_state.a, &new_state.data.s, &new_state.data.q, &new_state.p);
+            println!("abstract label: {:?} -> {:?}", self.label(&current_state.state.s, &current_state.state.q, &current_state.a), self.label(&new_state.data.s, &new_state.data.q, &new_state.a));
+            current_state = TraversalStateSpace{state: ProductStateSpace{s: new_state.data.s, q: new_state.data.q.to_vec()}, a: new_state.a, abstract_label: new_state.abstract_ap.clone(), stoppable: new_state.stoppable };
             // when the task has been completed we need to move onto the next task in the permutation
-            match task_iter.next() {
-                Some(x) => {current_task = x; println!("next task: {}", current_task); task=false},
-                None => {finished=true; println!("finished")}
+            if current_state.stoppable {
+                // if all of the tasks are finished, then finished becomes true, otherwise
+                if tasks_finished(&current_state.abstract_label) {
+                    finished = true;
+                } // choose the next action to go to
+                else {
+                    transition_choice = self.determine_choices(&current_state.state.s, &current_state.state.q);
+                    let mut new_choice_state = TraversalStateSpace {
+                        state: ProductStateSpace { s: transition_choice.state.s, q: transition_choice.state.q.to_vec() },
+                        a: TaskAction { a: transition_choice.a.a, task: transition_choice.a.task },
+                        abstract_label: transition_choice.abstract_label.clone(),
+                        stoppable: transition_choice.stoppable
+                    };
+                    print!("p((s:{},q{:?}) , a:{:?}, (s':{},q':{:?}))", &current_state.state.s, &current_state.state.q, &new_choice_state.a, &new_choice_state.state.s, &new_choice_state.state.q);
+                    println!("abstract label: {:?} -> {:?}", self.label(&current_state.state.s, &current_state.state.q, &current_state.a), self.label(&new_choice_state.state.s, &new_choice_state.state.q, &new_choice_state.a));
+                    current_state = new_choice_state
+                }
             }
-            current_state = TraversalStateSpace{state: ProductStateSpace{s: current_state.state.s, q: current_state.state.q.to_vec()}, a: TaskAction{a: current_state.a.a, task: *current_task}};
         }
     }
 
@@ -451,7 +630,7 @@ impl <'a> ModifiedProductMDP <'a> {
         //let a_current: i8 = 1;
         let mut output: Vec<Traversal> = Vec::new();
         for x in self.transitions.iter().filter(|x| x.s == input.state.s && x.q == input.state.q && x.a.a == input.a.a && x.a.task == input.a.task) {
-            println!("State found: ({},{:?},action:{:?}, (s',q'): {:?}, stoppable: {}", x.s, x.q, x.a, x.s_prime, x.stoppable);
+            //println!("State found: ({},{:?},action:{:?}, (s',q'): {:?}, stoppable: {}", x.s, x.q, x.a, x.s_prime, x.stoppable);
             //println!("-> s': {:?}", x.s_prime);
             let o = x.s_prime.choose(&mut rand::thread_rng());
             match o {
@@ -464,6 +643,7 @@ impl <'a> ModifiedProductMDP <'a> {
                         },
                         p: traversal.p,
                         abstract_ap: traversal.abstract_label.clone(),
+                        stoppable: traversal.stoppable
                     }
                 ),
                 None => println!("nothing")
@@ -471,7 +651,7 @@ impl <'a> ModifiedProductMDP <'a> {
         }
         let result = output.choose(&mut rand::thread_rng());
         match result {
-            Some(x) => Traversal{a: x.a, data: ProductStateSpace{ s: x.data.s, q: x.data.q.to_vec()}, p: x.p, abstract_ap: x.abstract_ap.clone()},
+            Some(x) => Traversal{a: x.a, data: ProductStateSpace{ s: x.data.s, q: x.data.q.to_vec()}, p: x.p, abstract_ap: x.abstract_ap.clone(), stoppable: x.stoppable },
             None => {println!("filter was 0 length");Traversal::default()}
         }
     }
@@ -487,6 +667,17 @@ impl <'a> ModifiedProductMDP <'a> {
         //ap_return_unique
         ap_return
     }
+
+    pub fn check_transition_index(&self) -> bool {
+        for transition in self.transitions.iter() {
+            let state: &ProductStateSpace = &self.states[transition.state_index];
+            if transition.s != state.s || transition.q != state.q {
+                println!("state: {:?}, transition: ({}, {:?})", state, transition.s, transition.q);
+                return false
+            }
+        }
+        true
+    }
 }
 
 #[derive(Debug)]
@@ -495,12 +686,15 @@ struct Traversal {
     data: ProductStateSpace, // some data which is a modified transition
     p: f32,
     abstract_ap: HashMap<u8, TaskProgress>,
+    stoppable: bool,
 }
 
 #[derive(Debug)]
 pub struct TraversalStateSpace {
     state: ProductStateSpace,
     a: TaskAction,
+    abstract_label: HashMap<u8, TaskProgress>,
+    stoppable: bool
 }
 
 impl Traversal {
@@ -513,6 +707,7 @@ impl Traversal {
             },
             p: 0.,
             abstract_ap: HashMap::new(),
+            stoppable: false
         }
     }
 }
@@ -532,12 +727,16 @@ pub struct ModProductTransition{
     pub s: u32,
     pub q: Vec<u32>,
     pub a: TaskAction,
-    pub s_prime: Vec<ProductTransitionPair>,
+    pub constraint: f32,
+    pub reach_rewards: HashMap<u8, f32>,
+    pub s_prime: Vec<ModProductTransitionPair>,
     pub ap: Vec<String>,
     pub abstract_label: HashMap<u8, TaskProgress>,
     pub stoppable: bool,
+    pub state_index: usize,
 }
 
+/*
 pub fn generate_task_permuatations(no_tasks: u8) -> Vec<Vec<u8>>{
     let mut task_perms: Vec<Vec<u8>> = Vec::new();
     let mut tasks_ordered: Vec<u8> = (0..no_tasks).collect();
@@ -546,46 +745,69 @@ pub fn generate_task_permuatations(no_tasks: u8) -> Vec<Vec<u8>>{
         task_perms.push(task.clone())
     }
     task_perms
-}
+}*/
 
 impl <'a> ProductMDP <'a> {
+
+    fn determine_choices(&self, s: &u32, q: &Vec<u32>) -> TraversalStateSpace {
+        let mut choices: Vec<ProductTransition> = Vec::new();
+        for transition in self.transitions.iter().filter(|x| x.s == *s && x.q == *q) {
+            choices.push(transition.clone());
+        }
+        match choices.choose(&mut rand::thread_rng()) {
+            Some(x) => TraversalStateSpace {
+                state: ProductStateSpace { s: x.s, q: x.q.to_vec() },
+                a: TaskAction { a: x.a.a, task: x.a.task },
+                abstract_label: x.abstract_label.clone(),
+                stoppable: x.stoppable
+            },
+            None => TraversalStateSpace {
+                state: ProductStateSpace { s: 0, q: vec![] },
+                a: TaskAction { a: 0, task: 0 },
+                abstract_label: Default::default(),
+                stoppable: false
+            }
+        }
+    }
 
     pub fn traverse_n_steps(&self){
         //let mut step: u32 = 0;
         let mut new_state = Traversal::default();
         let mut finished: bool = false;
-        let task_perms: Vec<Vec<u8>> = generate_task_permuatations(self.task_counter);
-        // choose a permutation form the vector of permutations
-        let task_int = task_perms.choose(&mut rand::thread_rng()).unwrap();
-        println!("Random task vector: {:?}", task_int);
-        let mut task_iter = task_int.iter();
-        let mut current_task = task_iter.next().unwrap();
-        let mut current_state = TraversalStateSpace{state: ProductStateSpace{s: self.initial.s, q: self.initial.q.to_vec()}, a: TaskAction{a: 1, task: *current_task}};
-        let mut task: bool = false;
-        println!("First state: {:?}", current_state);
+        let mut transition_choice = self.determine_choices(&self.initial.s, &self.initial.q);
+        println!("transition choice: {:?}", transition_choice);
+        let mut current_state = TraversalStateSpace {
+            state: ProductStateSpace { s: transition_choice.state.s, q: transition_choice.state.q.to_vec() },
+            a: TaskAction { a: transition_choice.a.a, task: transition_choice.a.task },
+            abstract_label: transition_choice.abstract_label.clone(),
+            stoppable: transition_choice.stoppable
+        };
+        print!("p((s:{},q{:?}) , a:{:?}, (s':{},q':{:?})): ", &self.initial.s, &self.initial.q, &current_state.a, &current_state.state.s, &current_state.state.q);
+        println!("abstract label: initial -> {:?}", current_state.abstract_label);
         while !finished {
-            while !task {
-                new_state = self.traversal(&current_state);
-                print!("p((s:{},q{:?}) , a:{:?}, (s':{},q':{:?}))={}: ", &current_state.state.s, &current_state.state.q, &new_state.a, &new_state.data.s, &new_state.data.q, &new_state.p);
-                println!("abstract label: {:?} -> {:?}", self.label(&current_state.state.s, &current_state.state.q, &current_state.a), self.label(&new_state.data.s, &new_state.data.q, &new_state.a));
-                match new_state.abstract_ap.get(current_task) {
-                    Some(x) => match x {
-                        TaskProgress::JustFailed => {task = true},
-                        TaskProgress::Finished => {task = true},
-                        TaskProgress::Failed => {task = true},
-                        _ => {}
-                    },
-                    None => {println!("On call of abstract AP, returned None, current task: {}", current_task); task = false}
-                }
-
-                current_state = TraversalStateSpace{state: ProductStateSpace{s: new_state.data.s, q: new_state.data.q.to_vec()}, a: new_state.a};
-            }
+            new_state = self.traversal(&current_state);
+            print!("p((s:{},q{:?}) , a:{:?}, (s':{},q':{:?}))={}: ", &current_state.state.s, &current_state.state.q, &new_state.a, &new_state.data.s, &new_state.data.q, &new_state.p);
+            println!("abstract label: {:?} -> {:?}", self.label(&current_state.state.s, &current_state.state.q, &current_state.a), self.label(&new_state.data.s, &new_state.data.q, &new_state.a));
+            current_state = TraversalStateSpace{state: ProductStateSpace{s: new_state.data.s, q: new_state.data.q.to_vec()}, a: new_state.a, abstract_label: new_state.abstract_ap.clone(), stoppable: new_state.stoppable };
             // when the task has been completed we need to move onto the next task in the permutation
-            match task_iter.next() {
-                Some(x) => {current_task = x; println!("next task: {}", current_task); task=false},
-                None => {finished=true; println!("finished")}
+            if current_state.stoppable {
+                // if all of the tasks are finished, then finished becomes true, otherwise
+                if tasks_finished(&current_state.abstract_label){
+                    finished = true;
+                } // choose the next action to go to
+                else {
+                    transition_choice = self.determine_choices(&current_state.state.s, &current_state.state.q);
+                    let mut new_choice_state = TraversalStateSpace {
+                        state: ProductStateSpace { s: transition_choice.state.s, q: transition_choice.state.q.to_vec() },
+                        a: TaskAction { a: transition_choice.a.a, task: transition_choice.a.task },
+                        abstract_label: transition_choice.abstract_label.clone(),
+                        stoppable: transition_choice.stoppable
+                    };
+                    print!("p((s:{},q{:?}) , a:{:?}, (s':{},q':{:?}))", &current_state.state.s, &current_state.state.q, &new_choice_state.a, &new_choice_state.state.s, &new_choice_state.state.q);
+                    println!("abstract label: {:?} -> {:?}", self.label(&current_state.state.s, &current_state.state.q, &current_state.a), self.label(&new_choice_state.state.s, &new_choice_state.state.q, &new_choice_state.a));
+                    current_state = new_choice_state
+                }
             }
-            current_state = TraversalStateSpace{state: ProductStateSpace{s: current_state.state.s, q: current_state.state.q.to_vec()}, a: TaskAction{a: current_state.a.a, task: *current_task}};
         }
     }
 
@@ -595,7 +817,7 @@ impl <'a> ProductMDP <'a> {
         //let a_current: i8 = 1;
         let mut output: Vec<Traversal> = Vec::new();
         for x in self.transitions.iter().filter(|x| x.s == input.state.s && x.q == input.state.q && x.a.a == input.a.a && x.a.task == input.a.task) {
-            println!("State found: ({},{:?},action:{:?}, (s',q'): {:?}, stoppable: {}", x.s, x.q, x.a, x.s_prime, x.stoppable);
+            //println!("State found: ({},{:?},action:{:?}, (s',q'): {:?}, stoppable: {}", x.s, x.q, x.a, x.s_prime, x.stoppable);
             //println!("-> s': {:?}", x.s_prime);
             let o = x.s_prime.choose(&mut rand::thread_rng());
             match o {
@@ -608,6 +830,7 @@ impl <'a> ProductMDP <'a> {
                         },
                         p: traversal.p,
                         abstract_ap: traversal.abstract_label.clone(),
+                        stoppable: traversal.stoppable
                     }
                 ),
                 None => println!("nothing")
@@ -615,7 +838,7 @@ impl <'a> ProductMDP <'a> {
         }
         let result = output.choose(&mut rand::thread_rng());
         match result {
-            Some(x) => Traversal{a: x.a, data: ProductStateSpace{ s: x.data.s, q: x.data.q.to_vec()}, p: x.p, abstract_ap: x.abstract_ap.clone()},
+            Some(x) => Traversal{a: x.a, data: ProductStateSpace{ s: x.data.s, q: x.data.q.to_vec()}, p: x.p, abstract_ap: x.abstract_ap.clone(), stoppable: x.stoppable },
             None => {println!("filter was 0 length");Traversal::default()}
         }
     }
@@ -655,15 +878,16 @@ impl <'a> ProductMDP <'a> {
                         qprimes.push(qprime);
 
                         let mut task_progress: HashMap<u8, TaskProgress> = sprime.abstract_label.clone();
-                        let (task_label, _) = MDP::get_abstract_label(Some(q), &qprime, dfa);
+                        let task_label = MDP::get_abstract_label(Some(q), &qprime, dfa);
                         task_progress.insert(*task, task_label);
 
                         sprimes.push(ProductTransitionPair{
                             s: sprime.s,
                             p: sprime.p,
                             q: qprimes,
-                            abstract_label: task_progress,
-                            ap: sprime.ap.to_string()
+                            abstract_label: task_progress.clone(),
+                            ap: sprime.ap.to_string(),
+                            stoppable: is_stoppable(&task_progress)
                         });
 
                         // new transition
@@ -672,36 +896,39 @@ impl <'a> ProductMDP <'a> {
                         qprimes2.push(qprime2);
 
                         let mut task_progress2: HashMap<u8, TaskProgress> = transition.abstract_label.clone();
-                        let (task_label2, stoppable) = MDP::get_abstract_label(Some(q), &qprime2, dfa);
+                        let task_label2= MDP::get_abstract_label(Some(q), &qprime2, dfa);
                         task_progress2.insert(*task, task_label2);
 
                         sprimes_new.push(ProductTransitionPair{
                             s: sprime.s,
                             p: sprime.p,
                             q: qprimes2,
-                            abstract_label: task_progress2,
-                            ap: format!("{}", (new_labelling)(sprime.s))
+                            abstract_label: task_progress2.clone(),
+                            ap: format!("{}", (new_labelling)(sprime.s)),
+                            stoppable: is_stoppable(&task_progress2)
                         });
                     }
                     let mut state_label: HashMap<u8, TaskProgress> = transition.abstract_label.clone();
-                    let (state_label_value, stoppable_value) = MDP::get_abstract_label(None, q, dfa);
+                    let state_label_value = MDP::get_abstract_label(None, q, dfa);
                     state_label.insert(*task, state_label_value);
                     transitions_new.push(ProductTransition{
                         s: state.s,
                         q: newq.to_vec() ,
                         a: TaskAction { a: transition.a.a, task: transition.a.task },
+                        rewards: transition.rewards,
                         s_prime: sprimes,
                         abstract_label: state_label.clone(),
-                        stoppable: if initial { true } else { transition.stoppable },
+                        stoppable: is_stoppable(&state_label),
                         ap: transition.ap.to_string(),
                     });
                     transitions_new.push(ProductTransition{
                         s: state.s,
                         q: newq.to_vec() ,
                         a: TaskAction { a: transition.a.a, task: *task },
+                        rewards: transition.rewards,
                         s_prime: sprimes_new,
                         abstract_label: state_label.clone(),
-                        stoppable: if initial { true } else { transition.stoppable },
+                        stoppable: is_stoppable(&state_label),
                         ap: format!("{}", (new_labelling)(state.s)),
                     })
                 }
@@ -710,10 +937,10 @@ impl <'a> ProductMDP <'a> {
         let mut initial_dfa_vec: Vec<u32> = self.initial.q.to_vec();
         initial_dfa_vec.push(dfa.initial);
         self.states = state_space_new;
+        // There will never be an active task in the initial state
         self.initial = ProductStateSpace{s: self.initial.s, q: initial_dfa_vec};
         self.transitions = transitions_new;
         self.task_counter = self.task_counter + 1;
         self
     }
-
 }
