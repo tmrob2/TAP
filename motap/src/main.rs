@@ -1,17 +1,16 @@
-mod mdp_structures;
-mod team_mdp_structures;
-mod tests;
 
-use model_checking::{Transition, TransitionPair};
-use mdp_structures::{TaskProgress, ProductMDP, ProductStateSpace};//, product_mdp_v4};
+use model_checking::{value_iteration, generate_random_vector_sum1, member_closure_set, pareto_lp};
+
+use model_checking::{Transition, TransitionPair, TeamDFSResult,
+                     TeamStateSpace, TaskProgress, ProductMDP, ProductStateSpace,
+                     DFA, MDP, ModifiedProductMDP, ModProductTransition,
+                     TeamMDP};
 //use itertools::Itertools;
 use std::collections::{HashSet, HashMap};
 use std::convert::TryFrom;
-use crate::mdp_structures::{ModifiedProductMDP, ModProductTransition};
 //use itertools::{any, Itertools};
 //use rand::seq::SliceRandom;
-//use ordered_float::NotNan;
-use crate::team_mdp_structures::{TeamDFSResult, TeamStateSpace};//, TeamMDP, norm};
+//use ordered_float::NotNan;;//, TeamMDP, norm};
 //extern crate petgraph;
 //use petgraph::graph::Graph;
 //use petgraph::dot::Dot;
@@ -20,14 +19,13 @@ use std::fs::File;
 use std::io::prelude::*;
 use ndarray::arr1;
 
-
 fn main() {
 
     let transitions2: Vec<Transition> = vec![
         Transition {
             s: 0,
             a: 1,
-            s_prime: vec![TransitionPair{s: 0, p: 0.2}, TransitionPair{ s:1, p:0.8}],
+            s_prime: vec![TransitionPair{s: 0, p: 0.1}, TransitionPair{ s:1, p:0.9}],
             rewards: 1.
         },
         Transition {
@@ -39,7 +37,7 @@ fn main() {
         Transition {
             s: 2,
             a: 1,
-            s_prime: vec![TransitionPair{s: 3, p: 0.5}, TransitionPair{s: 4, p: 0.5}],
+            s_prime: vec![TransitionPair{s: 3, p: 0.9}, TransitionPair{s: 4, p: 0.1}],
             rewards: 1.
         },
         Transition {
@@ -64,21 +62,21 @@ fn main() {
 
     //let j_task: u32 = 0;
 
-    let dfa1: mdp_structures::DFA = mdp_structures::DFA{
+    let dfa1: DFA = DFA{
         states: vec![0,1,2,3],
         initial: 0u32,
         delta: delta1,
         rejected: vec![3u32],
         accepted: vec![2u32],
     };
-    let dfa2 = mdp_structures::DFA {
+    let dfa2 = DFA {
         states: vec![0,1,2,3,4],
         initial: 0,
         delta: delta2,
         rejected: vec![4u32],
         accepted: vec![3u32],
     };
-    let mdp1 = mdp_structures::MDP {
+    let mdp1 = MDP {
         states: vec![0,1,2,3,4],
         initial: 0,
         transitions: transitions2,
@@ -86,10 +84,10 @@ fn main() {
     };
     // create an initial product MDP
     //let mut delta_hash: HashMap<u8, &fn(&u32, &str) -> u32> = HashMap::new();
-    let mut empty_product_mdp: ProductMDP = ProductMDP{
+    let mut empty_product_mdp: model_checking::ProductMDP = model_checking::ProductMDP{
         states: vec![],
         transitions: vec![],
-        initial: ProductStateSpace { s: 0, q: vec![], mdp_init: false },
+        initial: model_checking::ProductStateSpace { s: 0, q: vec![], mdp_init: false },
         labelling: vec![mdp_labelling],
         task_counter: 0,
         dfa_delta: &mut Default::default(),
@@ -110,10 +108,10 @@ fn main() {
     }*/
     //pmdp2.traverse_n_steps();
 
-    let mut base_prod_mdp = ModifiedProductMDP{
+    let mut base_prod_mdp = model_checking::ModifiedProductMDP{
         states: vec![],
         transitions: vec![],
-        initial: ProductStateSpace { s: 0, q: vec![], mdp_init: false},
+        initial: model_checking::ProductStateSpace { s: 0, q: vec![], mdp_init: false},
         labelling: &pmdp2.labelling,
         number: 0,
         task_counter: 0,
@@ -127,7 +125,7 @@ fn main() {
     }*/
     //local_prod1.traverse_n_steps();
     let local_prod2 = local_prod1.clone();
-    let mut t = team_mdp_structures::TeamMDP::empty();
+    let mut t = TeamMDP::empty();
     let num_agents: u8 = 2;
     t.introduce_modified_mdp(&local_prod1, &num_agents);
     println!("Team mdp state space index test: {}", t.check_transition_index());
@@ -158,9 +156,9 @@ fn main() {
     // Show all of the illegal states -> we want to demonstrate that these states are unreachable
     // from the initial state of the agent, and should thus be discounted
     // todo move the illegal states to the test section
-    let mut illegal_states: HashSet<TeamStateSpace> = HashSet::new();
-    for transition in t.transitions.iter().filter(|x| x.abstract_label.values().all(|x| match x { TaskProgress::InProgress => true, _ => false} == true)){
-        illegal_states.insert(TeamStateSpace{
+    let mut illegal_states: HashSet<model_checking::TeamStateSpace> = HashSet::new();
+    for transition in t.transitions.iter().filter(|x| x.abstract_label.values().all(|x| match x { model_checking::TaskProgress::InProgress => true, _ => false} == true)){
+        illegal_states.insert(model_checking::TeamStateSpace{
             r: transition.r,
             s: transition.s,
             q: transition.q.to_vec(),
@@ -173,7 +171,7 @@ fn main() {
     println!("# States: {}", t.states.len());
     println!("# transitions: {}", t.transitions.len());
 
-    let result: TeamDFSResult = t.reachable_states();
+    let result: model_checking::TeamDFSResult = t.reachable_states();
 
     //let mut excluded: HashSet<TeamStateSpace> = result.not_visited.into_iter().collect();
     //println!("{:?}", illegal_states.difference(&excluded));
@@ -196,10 +194,11 @@ fn main() {
     */
 
     // Running algorithm 2 in pieces
-    let w: Vec<f32> = vec![0.25,0.25,0.25,0.25];
-    let (mu, r) = t.minimise_expected_weighted_cost_of_scheduler(&result.visted, &w, 0.001);
-    println!("output norm: {}", arr1(&w).dot(&arr1(&r)));
-    println!("target norm: {}", arr1(&w).dot(&arr1(&vec![5.,5.,0.9,0.9])));
+    //let w: Vec<f64> = vec![0.0,0.5,0.0,0.5];
+    let target = vec![12.,12.,0.5,0.5];
+    //let (mu, r) = t.minimise_expected_weighted_cost_of_scheduler(&result.visted, &w, 0.001);
+    //println!("output norm: {}", arr1(&w).dot(&arr1(&r)));
+    //println!("target norm: {}", arr1(&w).dot(&arr1(&target)));
 
     /*
     let g_mu = t.construct_scheduler_graph(&mu);
@@ -207,11 +206,236 @@ fn main() {
     file.write_all(&g_mu.as_bytes());
 
      */
-    /*
-    for tran in t.transitions.iter().filter(|x| x.r == 2 && x.s == 2 && x.q == vec![3,0]) {
-        println!("({},{},{:?}), action: {:?} -> {:?}", tran.r, tran.s, tran.q, tran.a, tran.s_prime);
-    }*/
 
+    let mut hull_set: Vec<Vec<f64>> = Vec::new();
+    let target_set = vec![target.to_vec()];
+    let mut w = vec![0.25, 0.25, 0.25, 0.25];
+    for k in 0..10 {
+        //let w = generate_random_vector_sum1(&4, &0, &100);
+        //println!("w: {:?}", w);
+        let (mu, r) = t.minimise_expected_weighted_cost_of_scheduler(&result.visted, &w, 0.001);
+        hull_set.push(r,);
+        w = pareto_lp(&hull_set, & target_set, &4);
+        //println!("{:?}", w);
+        //println!("r: {:?}", r);
+        //println!("output norm: {}", arr1(&w).dot(&arr1(&r)));
+        //println!("target norm: {}", arr1(&w).dot(&arr1(&target)));
+        if member_closure_set(&hull_set, &target) {
+            println!("target is a member of the upward closure, found in {} steps", k);
+            break
+        }
+    }
+
+}
+
+fn show_state_space_is_transition_space(transitions: &Vec<model_checking::ModProductTransition>, state_space: &Vec<ProductStateSpace>) -> bool {
+    for state in state_space.iter() {
+        let mut filt = transitions.iter().filter(|x| x.s == state.s && x.q == state.q).peekable();
+        if filt.peek().is_none(){
+            println!("{}, {:?}", state.s, state.q);
+            return false
+        }
+    }
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use minilp::Variable;
+    use itertools::assert_equal;
+    use model_checking::member_closure_set;
+
+    #[test]
+    /// Test that an empty hashmap produces a lenght of zero
+    fn test_hmap_empty() {
+        let hmap: HashMap<u32, String> = HashMap::new();
+        assert_eq!(hmap.len(), 0);
+    }
+
+    #[test]
+    /// Test that basic value iteration is working on a simple MDP
+    fn test_value_iteration() -> Result<(), String>{
+        let target = vec![2];
+        let s0min = vec![3];
+        let states: Vec<u32> = (0..4).collect();
+        // I believe that we can actually define a non-zero rewards vector on this structure, we can
+        // also use this structure to define some LTL properties on
+        let transitions: Vec<Transition> = vec![
+            Transition {
+                s: 0,
+                a: 1,
+                s_prime: vec![TransitionPair{s: 1, p: 1.}],
+                rewards: 0.
+            },
+            Transition {
+                s: 1,
+                a: 1,
+                s_prime: vec![TransitionPair{s: 0, p: 0.6}, TransitionPair{s: 2, p: 0.3}, TransitionPair{s:3, p:0.1}],
+                rewards: 0.
+            },
+            Transition {
+                s: 1,
+                a: 2,
+                s_prime: vec![TransitionPair{s: 2, p: 0.5}, TransitionPair{s: 3, p: 0.5}],
+                rewards: 0.
+            },
+            Transition {
+                s: 2,
+                a: 1,
+                s_prime: vec![TransitionPair{s: 2, p: 1.}],
+                rewards: 0.
+            },
+            Transition {
+                s: 3,
+                a: 1,
+                s_prime: vec![TransitionPair { s: 3, p: 1. }],
+                rewards: 0.
+            }
+        ];
+        value_iteration(&states, &transitions, 0.001, &target, &s0min);
+        Ok(())
+    }
+
+    #[test]
+    /// Show that for every transition there is exactly one state representing this transition, and
+    /// for every state there are a non-empty set of transition which represent that state
+    fn state_space_transitions(){
+        let transitions2: Vec<Transition> = vec![
+            Transition {
+                s: 0,
+                a: 1,
+                s_prime: vec![TransitionPair{s: 0, p: 0.2}, TransitionPair{ s:1, p:0.8}],
+                rewards: 0.
+            },
+            Transition {
+                s: 1,
+                a: 1,
+                s_prime: vec![TransitionPair{s:2, p:1.}],
+                rewards: 0.
+            },
+            Transition {
+                s: 2,
+                a: 1,
+                s_prime: vec![TransitionPair{s: 3, p: 0.5}, TransitionPair{s: 4, p: 0.5}],
+                rewards: 0.
+            },
+            Transition {
+                s: 2,
+                a: 2,
+                s_prime: vec![TransitionPair{s:4, p:1.}],
+                rewards: 0.
+            },
+            Transition {
+                s: 3,
+                a: 1,
+                s_prime: vec![TransitionPair{s:2, p:1.}],
+                rewards: 0.
+            },
+            Transition {
+                s: 4,
+                a: 1,
+                s_prime: vec![TransitionPair{s: 0, p: 1.}],
+                rewards: 0.
+            }
+        ];
+        let dfa1: DFA = DFA{
+        states: vec![0,1,2,3],
+        initial: 0u32,
+        delta: delta1,
+        rejected: vec![3u32],
+        accepted: vec![2u32],
+        };
+        let dfa2 = DFA {
+            states: vec![0,1,2,3,4],
+            initial: 0,
+            delta: delta2,
+            rejected: vec![4u32],
+            accepted: vec![3u32],
+        };
+        let mdp1 = MDP {
+            states: vec![0,1,2,3,4],
+            initial: 0,
+            transitions: transitions2,
+            labelling: mdp_labelling
+        };
+        // create an initial product MDP
+        //let mut delta_hash: HashMap<u8, &fn(&u32, &str) -> u32> = HashMap::new();
+        let mut empty_product_mdp: ProductMDP = ProductMDP{
+            states: vec![],
+            transitions: vec![],
+            initial: ProductStateSpace { s: 0, q: vec![], mdp_init: false },
+            labelling: vec![mdp_labelling],
+            task_counter: 0,
+            dfa_delta: &mut Default::default(),
+            mdp_transitions: &vec![]
+        };
+        let mut pmdp1 = mdp1.initial_product_mdp(&dfa1, &mut empty_product_mdp);
+        //let f = **pmdp1.dfa_delta.get(&0).unwrap();
+        //pmdp1.labelling = mdp_labelling2;
+        let label2: L = mdp_labelling2;
+        let mut pmdp2 = pmdp1.local_product(&dfa2, &1u8, &label2);
+
+        let mut base_prod_mdp = ModifiedProductMDP{
+            states: vec![],
+            transitions: vec![],
+            initial: ProductStateSpace { s: 0, q: vec![], mdp_init: false},
+            labelling: &pmdp2.labelling,
+            number: 0,
+            task_counter: 0,
+        };
+        let mut local_prod1 = base_prod_mdp.generate_mod_product(pmdp2);
+        let local_prod_sound: bool = show_state_space_is_transition_space(&local_prod1.transitions, &local_prod1.states);
+        assert_eq!(local_prod_sound, true); // this says that every state in the state space is
+    }
+
+    #[test]
+    fn milp_test() {
+        use minilp::{Problem, OptimizationDirection, ComparisonOp};
+
+        // Maximize an objective function x + 2 * y of two variables x >= 0 and 0 <= y <= 3
+        let mut problem = Problem::new(OptimizationDirection::Maximize);
+        let x = problem.add_var(1.0, (0.0, f64::INFINITY));
+        let y = problem.add_var(2.0, (0.0, 3.0));
+
+        // subject to constraints: x + y <= 4 and 2 * x + y >= 2.
+        problem.add_constraint(&[(x, 1.0), (y, 1.0)], ComparisonOp::Le, 4.0);
+        problem.add_constraint(&[(x, 2.0), (y, 1.0)], ComparisonOp::Ge, 2.0);
+
+        // Optimal value is 7, achieved at x = 1 and y = 3.
+        let solution = problem.solve().unwrap();
+        assert_eq!(solution.objective(), 7.0);
+        assert_eq!(solution[x], 1.0);
+        assert_eq!(solution[y], 3.0);
+    }
+
+    #[test]
+    fn motap_milp_problem_formulation() {
+
+        let h: Vec<Vec<f64>> = vec![vec![0.2, 0.7]];
+        let k: Vec<Vec<f64>> = vec![vec![0.4, 0.6], vec![0., 0.66]];
+
+        let w = model_checking::pareto_lp(&h, &k, &2);
+        //assert_eq!(w[0], 0.13);
+        //assert_!(w[1], 0.87);
+        assert_eq!(w[0] + &w[1], 1.0);
+    }
+
+    #[test]
+    fn test_random_val_vec() {
+        let output = model_checking::generate_random_vector_sum1(&4,&0, &100);
+        let sum_solution: f64 = ((output.iter().fold(0., |sum, val| sum + val) * 1000.).round() / 1000.) as f64;
+        assert_eq!(sum_solution, 1.0);
+    }
+
+    #[test]
+    fn test_closure_set() {
+        let hull_set_t = vec![vec![0.2, 0.1], vec![0.3, 0.4], vec![0.6, 0.5]];
+        let hull_set_f = vec![vec![0.3, 0.7], vec![0.5, 0.2]];
+        let target = vec![0.4, 0.5];
+        assert_eq!(member_closure_set(&hull_set_t, &target), true);
+        assert_eq!(member_closure_set(&hull_set_f, &target), false);
+    }
 }
 
 pub fn delta1<'a>(q: u32, a: &'a str) -> u32 {

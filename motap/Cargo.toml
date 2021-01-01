@@ -14,4 +14,9 @@ ndarray = "0.14.0"
 ordered-float = "2.0.1"
 petgraph = "0.5.1"
 minilp = "0.2.2"
+criterion = "0.3.3"
 model_checking = {path="model_checking"}
+
+[[bench]]
+name = "model_checking_bench"
+harness = false
