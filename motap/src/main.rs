@@ -1,5 +1,5 @@
 
-use model_checking::{value_iteration, generate_random_vector_sum1, member_closure_set, pareto_lp};
+use model_checking::{value_iteration, generate_random_vector_sum1, member_closure_set, pareto_lp, witness, muliobj_scheduler_synthesis};
 
 use model_checking::{Transition, TransitionPair, TeamDFSResult,
                      TeamStateSpace, TaskProgress, ProductMDP, ProductStateSpace,
@@ -207,24 +207,7 @@ fn main() {
 
      */
 
-    let mut hull_set: Vec<Vec<f64>> = Vec::new();
-    let target_set = vec![target.to_vec()];
-    let mut w = vec![0.25, 0.25, 0.25, 0.25];
-    for k in 0..10 {
-        //let w = generate_random_vector_sum1(&4, &0, &100);
-        //println!("w: {:?}", w);
-        let (mu, r) = t.minimise_expected_weighted_cost_of_scheduler(&result.visted, &w, 0.001);
-        hull_set.push(r,);
-        w = pareto_lp(&hull_set, & target_set, &4);
-        //println!("{:?}", w);
-        //println!("r: {:?}", r);
-        //println!("output norm: {}", arr1(&w).dot(&arr1(&r)));
-        //println!("target norm: {}", arr1(&w).dot(&arr1(&target)));
-        if member_closure_set(&hull_set, &target) {
-            println!("target is a member of the upward closure, found in {} steps", k);
-            break
-        }
-    }
+    let sched_output = muliobj_scheduler_synthesis(&t, &target, &result.visted);
 
 }
 

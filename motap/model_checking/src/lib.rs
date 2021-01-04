@@ -1095,6 +1095,14 @@ pub fn norm(u: &Vec<f64>, v: &Vec<f64>) -> f64 {
 
 /// The implementation of the team MDP
 impl TeamMDP {
+    /// Generates a blank Team MDP struct, useful for initially generating the team MDP structure,
+    /// and then adding Modified MDP structures to it
+    /// # Example
+    /// ```
+    /// // Generates a new empty team MDP
+    /// TeamMDP::empty()
+    /// ```
+    ///
     pub fn empty() -> TeamMDP {
         TeamMDP {
             states: Vec::new(),
@@ -1108,6 +1116,18 @@ impl TeamMDP {
     /// Introducing a modified MDP structure to a team MDP structure is the main construction of this file. Adding
     /// a team MDP increases the agent, modifies the state space to identify unique robot states, and adds switch
     /// transitions with the appropriate reward structures
+    /// # Example
+    /// ```
+    /// // First generate a blank Team MDP
+    /// use model_checking::TeamMDP;
+    /// let mut team: TeamMDP = TeamMDP::empty();
+    /// // Suppose that we have a local product local_product1: ModifiedProductMDP
+    /// // We introduce this local product specifying the number of agents we want
+    /// //to include in the team
+    /// team.introduce_modified_mdp(&local_product1, &2); // for a two agent team
+    /// ```
+    /// We need to include the number of agents from the outside to size the rewards vectors in the team MDP
+    /// structure.
     pub fn introduce_modified_mdp(&mut self, mlp: &ModifiedProductMDP, agent_capacity: &u8) -> & mut TeamMDP {
         // create a new robot number
         self.robot_count = &self.robot_count + 1;
@@ -1236,7 +1256,7 @@ impl TeamMDP {
     }
 
     /// This function is a testing function to demonstrate that each transition is grounded in the correct state.
-    /// This is done through the use of the state_index attribute, which represents the location of the state in the
+    /// This is done through the use of the ```TeamTransition::state_index``` attribute, which represents the location of the state in the
     /// team state space vector.
     pub fn check_transition_index(&self) -> bool {
         for transition in self.transitions.iter() {
@@ -1745,6 +1765,40 @@ pub fn value_iteration(states:&Vec<u32>, transitions: &Vec<Transition>, epsilon:
     Ok(x)
 }
 
+/// Generate a witness vector such that the pareto face satisfies the target vector
+pub fn witness(target: &Vec<f64>, closure_set: &Vec<Vec<f64>>) -> Vec<f64> {
+    let mut problem = Problem::new(OptimizationDirection::Maximize);
+
+    let mut vars: HashMap<String, Variable> = HashMap::new();
+    for i in 0..closure_set.len() {
+        vars.insert(format!("v{}", i), problem.add_var(0., (0., 1.)));
+    }
+    //println!("vars: {:?}", vars);
+
+    for i in 0..target.len() {
+        let mut lhs = LinearExpr::empty();
+        for j in 0..closure_set.len(){
+            lhs.add(*vars.get(&*format!("v{}",j)).unwrap(), closure_set[j][i]);
+        }
+        //println!("lhs: {:?}", lhs);
+        problem.add_constraint(lhs, ComparisonOp::Le, target[i]);
+    }
+
+    let mut lhs = LinearExpr::empty();
+    for i in 0..closure_set.len(){
+        lhs.add(*vars.get(&*format!("v{}", i)).unwrap(), 1.0);
+    }
+    problem.add_constraint(lhs, ComparisonOp::Eq, 1.0);
+    let solution = problem.solve().unwrap();
+    let mut v: Vec<f64> = vec![0.; closure_set[0].len() as usize + 1];
+    for i in 0..closure_set.len() {
+        let val: f64 = ((solution[*vars.get(&*format!("v{}", i)).unwrap()] * 1000.).round() / 1000.) as f64;
+        v[i] = val;
+        //println!("index: {}, v: {:?}", i, v);
+    }
+    v
+}
+
 /// This function will return a point on the pareto frontier according to the data input. Essentially
 /// this is a linear separability problem, where we want to discriminate +ve, and -ve points.
 pub fn pareto_lp(h: &Vec<Vec<f64>>, k: &Vec<Vec<f64>>, dim: &u8) -> Vec<f64> {
@@ -1806,4 +1860,43 @@ pub fn member_closure_set(hull_set: &Vec<Vec<f64>>, r: &Vec<f64>) -> bool {
         }
     }
     false
+}
+
+pub struct Alg1Output {
+    pub hullset: Vec<Vec<f64>>,
+    pub mus: Vec<Vec<(TeamStateSpace, TaskAction)>>
+}
+/// Algorithm 1, and the main algorithm in our collection of algorithms, it takes a team
+/// MDP structure (fully formed inclusive of the rewards model), and a target vector to
+/// generate a series of pareto optimal schedulers on the vertices of the polytope formed
+/// in R^n (n objectives)
+#[inline]
+pub fn muliobj_scheduler_synthesis(team: &TeamMDP, target: &Vec<f64>, reachable_states: &Vec<TeamStateSpace>) -> Alg1Output {
+    let mut hull_set: Vec<Vec<f64>> = Vec::new();
+    let mut mus: Vec<Vec<(TeamStateSpace, TaskAction)>> = Vec::new();
+    let target_set = vec![target.to_vec()];
+    let mut w = vec![0.25, 0.25, 0.25, 0.25];
+    for k in 0..10 {
+        //let w = generate_random_vector_sum1(&4, &0, &100);
+        //println!("w: {:?}", w);
+        let (mu, r) = team.minimise_expected_weighted_cost_of_scheduler(reachable_states, &w, 0.001);
+        hull_set.push(r);
+        mus.push(mu);
+        w = pareto_lp(&hull_set, & target_set, &4);
+        //println!("{:?}", w);
+        //println!("r: {:?}", r);
+        //println!("output norm: {}", arr1(&w).dot(&arr1(&r)));
+        //println!("target norm: {}", arr1(&w).dot(&arr1(&target)));
+        if member_closure_set(&hull_set, &target) {
+            //println!("target is a member of the upward closure, found in {} steps", k+1);
+            break
+        }
+    }
+    //println!("upward closure: {:?}", hull_set);
+    let v: Vec<f64> = witness(&target, &hull_set);
+    //println!("v: {:?}", v);
+    Alg1Output {
+        hullset: hull_set,
+        mus: mus
+    }
 }
