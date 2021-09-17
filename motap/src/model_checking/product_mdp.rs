@@ -1,5 +1,5 @@
 use ndarray::{ArrayView, Ix2, Array2};
-use itertools::Itertools;
+use itertools::{Itertools, Product};
 use super::s_mdp::{MDP, Agent, State};
 use crate::model_checking::s_automaton::{GenericTask, DFA};
 use std::collections::{HashMap, HashSet};
@@ -28,7 +28,7 @@ pub trait ProductAgentInner<T, A> {
     /// Exposes the initial state index of the PMDP
     fn expose_initial(&self) -> usize;
     /// Exposes the state space of a PMDP
-    fn state_space(&self) -> &[ProductState];
+    fn state_space(&self) -> &[ModProductState];
     /// Exposes the identifies 'agent number, task number' for a given PMDP. This function allows
     /// ignoring the ordering of the PMDPs in construction of the SCPM.
     fn identifiers(&self) -> PMDPIdent;
@@ -48,16 +48,6 @@ pub trait ProductAgentInner<T, A> {
     fn expose_act_labels(&self) -> &[A];
 }
 
-trait ModifyAgent {
-    fn modify_transition_matrix(&self);
-
-    fn modify_state_space(&self);
-
-    fn rewards_model(&self);
-
-    fn assign_rejecting(&self, acc: &[usize], graph: &Graph<usize, T>);
-}
-
 /// Struct for exposing the dimensions of a transition SMatrix
 pub struct Dims {
     pub rows: usize,
@@ -74,7 +64,7 @@ pub struct PMDPIdent {
 /// Generic Product MDP
 pub struct ProductAgent<T, A, const ACT: usize, const R1: usize> {
     pub i: usize,
-    pub s: Vec<ProductState>, // todo this might have to be dynamic, i.e. a vector and then, and then we can expose a slice to this vector in the SCPM
+    pub s: Vec<ModProductState>, // todo this might have to be dynamic, i.e. a vector and then, and then we can expose a slice to this vector in the SCPM
     pub p: [Array2<T>; ACT],
     state_hash: HashMap<(usize, usize), usize>,
     action_map: HashMap<usize, Vec<usize>>,
@@ -88,10 +78,51 @@ pub struct ProductAgent<T, A, const ACT: usize, const R1: usize> {
 }
 
 #[derive(Copy, Default, Clone, Debug)]
-pub struct ProductState {
+struct ProductState {
+    s: usize,
+    q: usize,
+    ix: usize
+}
+
+#[derive(Copy, Default, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct ModProductState {
     pub s: i32,
     pub q: i32,
     pub ix: usize
+}
+
+#[derive(Clone, Eq, Hash, PartialEq, Debug)]
+struct ModInstruction {
+    prev_trans: Transition,
+    future_trans: [Transition; 2],
+    state: ModProductState,
+    a: usize
+}
+
+#[derive(Clone, Eq, Hash, PartialEq, Default, Debug)]
+struct Transition {
+    from: usize,
+    to: usize
+}
+
+struct FutureTransition;
+
+impl FutureTransition {
+    /// A future transition is a modification that is a path from i -> k -> j
+    fn apply(i: usize, j: usize, k: usize) -> [Transition; 2] {
+        [Transition { from: i, to: k }, Transition { from: k, to: j }]
+    }
+}
+
+impl ModInstruction {
+    fn new(i: usize, j: usize, k: usize, a: usize, state: ModProductState) -> ModInstruction {
+        ModInstruction {
+            prev_trans: Transition {from: i, to: j},
+            future_trans: FutureTransition::apply(i,j,k),
+            state,
+            a
+        }
+    }
 }
 
 impl<T, A, const ACT: usize, const R1: usize> ProductAgent<T, A, ACT, R1>
@@ -104,24 +135,22 @@ where T: Float + PartialOrd + std::fmt::Debug + std::cmp::PartialEq
         let (state_space, state_mapping): ([ProductState; R1], HashMap<(usize, usize), usize>) =
             ProductAgent::<T, A, ACT, R1>::statespace(&mdp.state_space[..], &task.states[..]);
         let initial_state = ProductAgent::<T, A, ACT, R1>::initial_state(mdp, &task, &state_space[..]);
-        let transition_matrix = ProductAgent::<T, A, ACT, R1>::transition_matrix(mdp, task, &state_space[..]);
-        let product_rewards = ProductAgent::<T, A, ACT, R1>::rewards_model(mdp, &state_space[..]);
-        let graph = ProductAgent::<T, A, ACT, R1>::construct_abstract_graph(&state_space[..], &transition_matrix[..])?;
-        let acc = ProductAgent::<T, A, ACT, R1>::accepting_state(&state_space[..], task, initial_state, &graph);
-        let rej: Vec<usize> = ProductAgent::<T, A, ACT, R1>::construct_rejecting(&state_space[..], &acc[..], &graph).into_iter().collect();
-        let (state_action_mapping, actions) = ProductAgent::<T, A, ACT, R1>::actions(&mdp, &state_space[..]);
-
-
-        // We technically haven't constructed the product MDP at this point and therefore we can carry out modifcations here
-
+        let (transition_matrix, modifications) = ProductAgent::<T, A, ACT, R1>::transition_matrix(mdp, task, &state_space[..]);
+        let modified_transition_matrix = ProductAgent::<T, A, ACT, R1>::modify_transition_matrix(&transition_matrix[..], &modifications);
+        let modified_state_space = ProductAgent::<T, A, ACT, R1>::modify_state_space(&state_space[..], &modifications);
+        let rewards_model = ProductAgent::<T, A, ACT, R1>::rewards_model(&mdp, &modified_state_space[..]);
+        let (state_action_mapping, actions) = ProductAgent::<T, A, ACT, R1>::actions(&mdp, &modified_state_space[..], &modifications);
+        let graph = ProductAgent::<T, A, ACT, R1>::construct_abstract_graph(&modified_state_space[..], &modified_transition_matrix[..])?;
+        let rej = ProductAgent::<T, A, ACT, R1>::assign_rejecting(&modified_state_space[..], &task.accepting[..], &graph).into_iter().collect();
+        let acc = ProductAgent::<T, A, ACT, R1>::accepting_state(&modified_state_space[..], &task, initial_state, &graph);
         Ok(ProductAgent {
             i: initial_state,
-            s: state_space,
-            p: transition_matrix,
+            s: modified_state_space,
+            p: modified_transition_matrix,
             state_hash: state_mapping,
             action_map: state_action_mapping,
             actions,
-            r: product_rewards,
+            r: rewards_model,
             agent: agent_no,
             agent_init: mdp.init_state,
             task: task_no,
@@ -138,65 +167,123 @@ where T: Float + PartialOrd + std::fmt::Debug + std::cmp::PartialEq
     }
 
     fn statespace(mdp_states: &[State<A>], dfa_states: &[usize])
-        -> (Vec<ProductState>, HashMap<(usize, usize), usize>) {
-        let mut states = vec![ProductState::default(); R1];
+        -> ([ProductState; R1], HashMap<(usize, usize), usize>) {
+        let mut states = array![ProductState::default(); R1];
         let mut state_hash: HashMap<(usize, usize), usize> = HashMap::new();
         let cp = mdp_states.iter().cartesian_product(dfa_states.iter());
         for (k, (s, q)) in cp.into_iter().enumerate() {
-            states[k] = ProductState { s: s.s as i32, q: *q as i32, ix: k};
+            states[k] = ProductState { s: s.s, q: *q, ix: k};
             state_hash.insert((s.s, *q), k);
         }
         (states, state_hash)
     }
 
-    fn transition_matrix<const R2: usize, const R3: usize>
-    (mdp: &Agent<T, A, ACT, R2>, task: &GenericTask<A, R3>, state_space: &[ProductState])
-        -> [Array2<T>; ACT]
+    fn transition_matrix<const R2: usize, const R3: usize>(mdp: &Agent<T, A, ACT, R2>, task: &GenericTask<A, R3>, state_space: &[ProductState])
+        -> ([Array2<T>; ACT], HashSet<ModInstruction>)
         where Agent<T, A, ACT, R2>: MDP<T, A, R2> {
         let mut p: [Array2<T>; ACT] = array![Array2::<T>::zeros((R1, R1)); ACT];
-        // todo 
+        let mut modifications: HashSet<ModInstruction> = HashSet::new();
+        let mut mod_count: usize = R1;
         for a in 0..ACT {
             for i in 0..R1 {
                 for j in 0..R1 {
                     let mdp_p = &mdp.transition_matrix[a][[state_space[i].s, state_space[j].s]];
                     if *mdp_p > NumCast::from(0.0).unwrap() {
-                        if state_space[j].q == task.transition(state_space[i].q as usize, mdp.state_space[state_space[j].s].w) {
+                        if state_space[j].q == task.transition(state_space[i].q, mdp.state_space[state_space[j].s].w) {
                             p[a][(i,j)] = *mdp_p;
+                            if !task.is_accepting(state_space[i].q) && task.is_accepting(state_space[j].q) {
+                                //println!("s: ({},{}) -> s': ({},{}), accepting transition, ready for modification", state_space[i].s, state_space[i].q, state_space[j].s, state_space[j].q);
+                                //println!("s: ({},{}) -> s*: ({},{}) -> s': ({},{})", state_space[i].s, state_space[i].q, mod_count, state_space[j].q, state_space[j].s, state_space[j].q);
+                                modifications.insert(ModInstruction::new(i, j, mod_count, a, ModProductState {s: -1, q: state_space[j].q as i32, ix: mod_count}));
+                                mod_count += 1;
+                            }
                         }
                     }
                 }
             }
         }
-        p
+        (p, modifications)
     }
-
-    fn actions<const R2: usize>(mdp: &Agent<T, A, ACT, R2>, state_space: &[ProductState])
-        -> (HashMap<usize, Vec<usize>>, [A; ACT]) {
-        let mut action_hash: HashMap<usize, Vec<usize>> = HashMap::new();
-        for s in state_space.iter() {
-            action_hash.insert(s.ix, mdp.state_action_map.get(&s.s).unwrap().to_vec());
-        }
-        (action_hash, mdp.actions.clone())
-    }
-
-    /// Accepting must be reachable from initial, otherwise it will never be accepting.
-    /// An empty error will return a warning
-    fn accepting_state<const R3: usize>
-    (state_space: &[ProductState], task: &GenericTask<A, R3>, initial: usize, graph: &Graph<usize, T>) -> Vec<usize> {
-        let mut acc: Vec<usize> = Vec::new();
-        let node_ix: Vec<_> = graph.node_indices().into_iter().collect();
-        for s in state_space.iter() {
-            if task.accepting.iter().any(|x| *x == s.q) {
-                //println!("Accepting state found: {:?}", s);
-                if petgraph::algo::has_path_connecting(&graph, node_ix[initial], node_ix[s.ix], None) {
-                    acc.push(s.ix);
+    /// To convert reachability probabilities to reachability rewards, we must modify the state space to include a one-way transition
+    /// which can only be reached once and then continues to accepted states.
+    fn modify_transition_matrix(transition_matrix: &[Array2<T>], modifications: &HashSet<ModInstruction>) -> [Array2<T>; ACT] {
+        // Size the array
+        let mod_size: usize = modifications.len();
+        let base_matrix: Array2<T> = Array2::<T>::zeros((R1 + mod_size, R1 + mod_size));
+        // copy over all of the elements of the previous transition matrix
+        let mut mod_transition_matrix = array![base_matrix; ACT];
+        for a in 0..ACT {
+            for i in 0..R1 {
+                for j in 0..R1 {
+                    mod_transition_matrix[a][[i,j]] = transition_matrix[a][[i,j]];
                 }
             }
         }
-        acc
+        for instr in modifications.iter() {
+            // Future instruction 1: rerouting the pre accepting state to the diode state
+            mod_transition_matrix[instr.a][[instr.future_trans[0].from, instr.future_trans[0].to]] =
+                mod_transition_matrix[instr.a][[instr.prev_trans.from, instr.prev_trans.to]];
+            // Future instruction 2: rerouting the diode state to the accepting state, will occur almost surely
+            mod_transition_matrix[instr.a][[instr.future_trans[1].from, instr.future_trans[1].to]] = T::from(1.0).unwrap();
+            // Deleting the previous transition
+            mod_transition_matrix[instr.a][[instr.prev_trans.from, instr.prev_trans.to]] = T::from(0.0).unwrap();
+        }
+        mod_transition_matrix
     }
 
-    fn construct_abstract_graph(state_space: &[ProductState], transitions: &[Array2<T>]) -> Result<Graph<usize, T, Directed>, Box<dyn std::error::Error>> {
+    fn modify_state_space(state_space: &[ProductState], modification: &HashSet<ModInstruction>) -> Vec<ModProductState> {
+        // First copy over the original state space, and then add in the new states
+        let mut mod_state_space: Vec<ModProductState> = state_space.iter().map(|x| ModProductState {
+            s: x.s as i32,
+            q: x.q as i32,
+            ix: x.ix
+        } ).collect();
+        for instr in modification.iter() {
+            mod_state_space.push(instr.state.clone());
+        }
+        mod_state_space
+    }
+    // todo needs to be adjusted to the modified state space
+    fn rewards_model<const R2: usize>(mdp: &Agent<T, A, ACT, R2>, state_space: &[ModProductState]) -> Array2<T> {
+        let mut r: Array2<T> = Array2::<T>::zeros((R1,ACT));
+        for s in 0..R1 {
+            for a in 0..ACT {
+                if state_space[s].s >= 0 {
+                    r[[s, a]] = mdp.rewards[[mdp.state_space[state_space[s].s as usize].s, a]];
+                } else {
+                    r[[s, a]] = T::from(0.0).unwrap();
+                }
+            }
+        }
+        r
+    }
+    // todo needs to be adjusted to the modified transition matrix
+    fn assign_rejecting(state_space: &[ModProductState], acc: &[usize], graph: &Graph<usize, T>) -> HashSet<usize> {
+        let mut rej: HashSet<usize> = HashSet::new();
+        let node_ix: Vec<_> = graph.node_indices().into_iter().collect();
+        for s in state_space.iter() {
+            for a in acc.iter() {
+                if !petgraph::algo::has_path_connecting(graph, node_ix[s.ix], node_ix[*a], None) {
+                    rej.insert(s.ix);
+                }
+            }
+        }
+        rej
+    }
+    // todo needs to be adjusted to the modified state space
+    fn actions<const R2: usize>(mdp: &Agent<T, A, ACT, R2>, state_space: &[ModProductState], modifications: &HashSet<ModInstruction>) -> (HashMap<usize, Vec<usize>>, [A; ACT]) {
+        let mut action_hash: HashMap<usize, Vec<usize>> = HashMap::new();
+        for s in state_space.iter() {
+            if s.s >= 0 {
+                action_hash.insert(s.ix, mdp.state_action_map.get(&(s.s as usize)).unwrap().to_vec());
+            } else {
+                action_hash.insert(s.ix, vec![modifications.iter().find(|x| x.state == *s).unwrap().a]);
+            }
+        }
+        (action_hash, mdp.actions.clone())
+    }
+    // todo needs to be adjusted to the modified transition matrix
+    fn construct_abstract_graph(state_space: &[ModProductState], transitions: &[Array2<T>]) -> Result<Graph<usize, T, Directed>, Box<dyn std::error::Error>> {
         let mut graph: Graph<usize, T, Directed> = Graph::new();
         for s in state_space.iter() {
             graph.add_node(s.ix);
@@ -212,6 +299,20 @@ where T: Float + PartialOrd + std::fmt::Debug + std::cmp::PartialEq
             }
         }
         Ok(graph)
+    }
+    // todo this needs to be adjusted to only accept the diode state
+    fn accepting_state<const R3: usize>(state_space: &[ModProductState], task: &GenericTask<A, R3>, initial: usize, graph: &Graph<usize, T>) -> Vec<usize> {
+        let mut acc: Vec<usize> = Vec::new();
+        let node_ix: Vec<_> = graph.node_indices().into_iter().collect();
+        for s in state_space.iter() {
+            if task.accepting.iter().any(|x| *x == s.q as usize) {
+                //println!("Accepting state found: {:?}", s);
+                if petgraph::algo::has_path_connecting(&graph, node_ix[initial], node_ix[s.ix], None) {
+                    acc.push(s.ix);
+                }
+            }
+        }
+        acc
     }
 }
 
@@ -256,7 +357,7 @@ impl<T, A, const ACT: usize, const R: usize> ProductAgentInner<T, A> for Product
         self.i
     }
 
-    fn state_space(&self) -> &[ProductState] {
+    fn state_space(&self) -> &[ModProductState] {
         &self.s[..]
     }
 
@@ -297,38 +398,5 @@ impl<T, A, const ACT: usize, const R: usize> ProductAgentInner<T, A> for Product
 
     fn expose_act_labels(&self) -> &[A] {
         &self.actions[..]
-    }
-}
-
-impl<T, A, const ACT: usize, const R1: usize> ModifyAgent for ProductAgent<T, A, ACT, R1> {
-    fn modify_transition_matrix(&self) {
-        todo!()
-    }
-
-    fn modify_state_space(&self) {
-        todo!()
-    }
-
-    fn rewards_model(&self) {
-        let mut r: Array2<T> = Array2::<T>::zeros((R1,ACT));
-        for s in 0..R1 {
-            for a in 0..ACT {
-                r[[s, a]] = mdp.rewards[[mdp.state_space[state_space[s].s].s, a]];
-            }
-        }
-        r
-    }
-
-    fn assign_rejecting(&self, acc: &[usize], graph: &Graph<usize, T>) -> HashSet<usize> {
-        let mut rej: HashSet<usize> = HashSet::new();
-        let node_ix: Vec<_> = graph.node_indices().into_iter().collect();
-        for s in state_space.iter() {
-            for a in acc.iter() {
-                if !petgraph::algo::has_path_connecting(graph, node_ix[s.ix], node_ix[*a], None) {
-                    rej.insert(s.ix);
-                }
-            }
-        }
-        rej
     }
 }

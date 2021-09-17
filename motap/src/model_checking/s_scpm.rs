@@ -68,7 +68,7 @@ impl<T, A, const S: usize, const ACT: usize, const N: usize> SCPM<T, A, S, ACT, 
                     if ord_pmdp.expose_initial() == s.ix {
                         self.initial_states_mapping.insert(ord_pmdp.identifiers(), state_ctr);
                     }
-                    let switch = if ord_pmdp.non_reachable(s.ix) && s.s == ord_pmdp.mdp_init_state() {
+                    let switch = if ord_pmdp.non_reachable(s.ix) && s.s == ord_pmdp.mdp_init_state() as i32 {
                         true
                     } else {
                         false
@@ -335,7 +335,7 @@ where T: Float + Debug + LinalgScalar + Zero + Copy + Clone + One + Sub + Div + 
             r[k] = ymat[[k, 0]];
         }
         println!("r: {:?}", r);
-        let output: Vec<((usize, usize), usize)> = self.s.iter().map(|x| ((x.s, x.q), mu[x.ix])).collect();
+        let output: Vec<((i32, i32), usize)> = self.s.iter().map(|x| ((x.s, x.q), mu[x.ix])).collect();
         println!("mu: {:?}", mu);
         Ok(())
     }

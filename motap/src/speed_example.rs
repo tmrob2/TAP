@@ -15,8 +15,8 @@ const AGENT1_SIZE: usize = 5;
 const ACT: usize = 2;
 const SCPM_ACT: usize = ACT;
 const ALPHA_SIZE: usize = 5;
-const TASK1_SIZE: usize = 6;
-const TASK2_SIZE: usize = 7;
+const TASK1_SIZE: usize = 4;
+const TASK2_SIZE: usize = 5;
 const SIZE1: usize = AGENT1_SIZE * TASK1_SIZE;
 const SIZE2: usize = AGENT1_SIZE * TASK2_SIZE;
 const SCPM_SIZE: usize = SIZE1 + SIZE2; // + SIZE1 + ;
@@ -61,11 +61,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     let matrix = [&t_a, &t_b];
     let agent1: Agent<f32, Word, ACT, AGENT1_SIZE> = Agent::new(0, &actions, &mdp_actions[..], &matrix[..], &mdp_state_labels[..], &rewards1);
 
-    let task1: GenericTask<Word, TASK1_SIZE> = GenericTask::new("task1.csv", 0, &dfa_alphabet[..], vec![3])?;
-    let task2: GenericTask<Word, TASK2_SIZE> = GenericTask::new("task2.csv", 0, &dfa_alphabet[..], vec![4])?;
+    let task1: GenericTask<Word, TASK1_SIZE> = GenericTask::new("task1.csv", 0, &dfa_alphabet[..], vec![2])?;
+    let task2: GenericTask<Word, TASK2_SIZE> = GenericTask::new("task2.csv", 0, &dfa_alphabet[..], vec![3])?;
 
-    let task1agent1: ProductAgent<f32, &str, ACT, SIZE1> = ProductAgent::new(&agent1, &task1, 0,0)?;
-    let task2agent1: ProductAgent<f32, &str, ACT, SIZE2> = ProductAgent::new(&agent1, &task2, 0, 1)?;
+    //let task1agent1: ProductAgent<f32, &str, ACT, SIZE1> = ProductAgent::new(&agent1, &task1, 0,0)?;
+    //let task2agent1: ProductAgent<f32, &str, ACT, SIZE2> = ProductAgent::new(&agent1, &task2, 0, 1)?;
+    ProductAgent::<f32, &str, ACT, SIZE1>::new(&agent1, &task1, 0,0)?;
 
     // SCPM - Model
     //let mut scpm: SCPM<f32, &str, SCPM_SIZE, SCPM_ACT, N> = SCPM::default();
