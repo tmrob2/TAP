@@ -243,7 +243,7 @@ where T: Float + PartialOrd + std::fmt::Debug + std::cmp::PartialEq
         }
         mod_state_space
     }
-    // todo needs to be adjusted to the modified state space
+
     fn rewards_model<const R2: usize>(mdp: &Agent<T, A, ACT, R2>, state_space: &[ModProductState]) -> Array2<T> {
         let mut r: Array2<T> = Array2::<T>::zeros((R1,ACT));
         for s in 0..R1 {
@@ -257,7 +257,7 @@ where T: Float + PartialOrd + std::fmt::Debug + std::cmp::PartialEq
         }
         r
     }
-    // todo needs to be adjusted to the modified transition matrix
+
     fn assign_rejecting(state_space: &[ModProductState], acc: &[usize], graph: &Graph<usize, T>) -> HashSet<usize> {
         let mut rej: HashSet<usize> = HashSet::new();
         let node_ix: Vec<_> = graph.node_indices().into_iter().collect();
@@ -270,7 +270,7 @@ where T: Float + PartialOrd + std::fmt::Debug + std::cmp::PartialEq
         }
         rej
     }
-    // todo needs to be adjusted to the modified state space
+
     fn actions<const R2: usize>(mdp: &Agent<T, A, ACT, R2>, state_space: &[ModProductState], modifications: &HashSet<ModInstruction>) -> (HashMap<usize, Vec<usize>>, [A; ACT]) {
         let mut action_hash: HashMap<usize, Vec<usize>> = HashMap::new();
         for s in state_space.iter() {
@@ -282,7 +282,7 @@ where T: Float + PartialOrd + std::fmt::Debug + std::cmp::PartialEq
         }
         (action_hash, mdp.actions.clone())
     }
-    // todo needs to be adjusted to the modified transition matrix
+
     fn construct_abstract_graph(state_space: &[ModProductState], transitions: &[Array2<T>]) -> Result<Graph<usize, T, Directed>, Box<dyn std::error::Error>> {
         let mut graph: Graph<usize, T, Directed> = Graph::new();
         for s in state_space.iter() {
@@ -300,7 +300,7 @@ where T: Float + PartialOrd + std::fmt::Debug + std::cmp::PartialEq
         }
         Ok(graph)
     }
-    // todo this needs to be adjusted to only accept the diode state
+
     fn accepting_state<const R3: usize>(state_space: &[ModProductState], task: &GenericTask<A, R3>, initial: usize, graph: &Graph<usize, T>) -> Vec<usize> {
         let mut acc: Vec<usize> = Vec::new();
         let node_ix: Vec<_> = graph.node_indices().into_iter().collect();
